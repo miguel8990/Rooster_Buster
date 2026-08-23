@@ -5,3 +5,4 @@ ninja
 cmake
 llama-cpp-python
 huggingface_hub
+openai>=1.0.0

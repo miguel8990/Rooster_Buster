@@ -21,53 +21,71 @@ class ModeradorCNN(nn.Module):
         self.conv5 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=5, padding=2)
         
         # 3. Lóbulo Frontal de Decisão (O Cérebro Profundo)
-        # O usuário pediu Força Bruta: 5 camadas gigantes de 1024 neurônios!
-        self.fc1 = nn.Linear(num_filtros * 4, 1024)
-        self.fc2 = nn.Linear(1024, 1024)
-        self.fc3 = nn.Linear(1024, 1024)
-        self.fc4 = nn.Linear(1024, 1024)
-        self.fc5 = nn.Linear(1024, 1)
+        # Information Bottleneck: Mais fundo (6 camadas), mais estreito (512)
+        # Recebe (4 janelas convolucionais) * (Max + Avg) = 8 filtros!
+        self.fc1 = nn.Linear(num_filtros * 8, 512)
+        self.bn1 = nn.BatchNorm1d(512)
         
-        # A Sigmoid garante que a resposta final fique perfeitamente espremida entre 0.0 (Anjo) e 1.0 (Banido)
-        self.sigmoid = nn.Sigmoid()
+        self.fc2 = nn.Linear(512, 512)
+        self.bn2 = nn.BatchNorm1d(512)
+        
+        self.fc3 = nn.Linear(512, 512)
+        self.bn3 = nn.BatchNorm1d(512)
+        
+        self.fc4 = nn.Linear(512, 512)
+        self.bn4 = nn.BatchNorm1d(512)
+        
+        self.fc5 = nn.Linear(512, 512)
+        self.bn5 = nn.BatchNorm1d(512)
+        
+        # A 6ª camada que fará o julgamento final
+        self.fc6 = nn.Linear(512, 1)
+        
+        # O "Esquecimento Programado" (Anti-Decoréba)
+        self.dropout = nn.Dropout(0.3)
 
     def forward(self, x):
-        # x tem formato: [Lote, 100 caracteres]
+        # x tem formato: [Lote, 300 caracteres]
         x_emb = self.embedding(x) 
-        # Após embutir: [Lote, 100 caracteres, 32 Dimensões]
+        # Após embutir: [Lote, 300 caracteres, 32 Dimensões]
         
         # A Conv1d no PyTorch exige que a dimensão seja [Lote, Canais, Comprimento]
         x_emb = x_emb.permute(0, 2, 1)
         
-        # Lente 0 (Duplas de letras) - Captura ofensas minúsculas!
+        # Lente 0 (Duplas de letras)
         c2 = torch.relu(self.conv2(x_emb))
-        c2 = torch.max(c2, dim=2)[0]
+        c2_max = torch.max(c2, dim=2)[0]
+        c2_avg = torch.mean(c2, dim=2)
         
-        # Lente 1 (Trincas de letras) + ReLU + Pega a maior ativação
+        # Lente 1 (Trincas de letras)
         c3 = torch.relu(self.conv3(x_emb))
-        c3 = torch.max(c3, dim=2)[0] 
+        c3_max = torch.max(c3, dim=2)[0] 
+        c3_avg = torch.mean(c3, dim=2)
         
         # Lente 2 (Quartetos de letras)
         c4 = torch.relu(self.conv4(x_emb))
-        c4 = torch.max(c4, dim=2)[0] 
+        c4_max = torch.max(c4, dim=2)[0] 
+        c4_avg = torch.mean(c4, dim=2)
         
         # Lente 3 (Quintetos de letras)
         c5 = torch.relu(self.conv5(x_emb))
-        c5 = torch.max(c5, dim=2)[0] 
+        c5_max = torch.max(c5, dim=2)[0] 
+        c5_avg = torch.mean(c5, dim=2)
         
-        # Junta todas as "provas" criminais que a rede achou
-        features = torch.cat((c2, c3, c4, c5), dim=1)
+        # Junta Provas Criminais de Pico Máximo + O Tom Geral (Média) da Frase
+        features = torch.cat((c2_max, c2_avg, c3_max, c3_avg, c4_max, c4_avg, c5_max, c5_avg), dim=1)
         
-        # O Raciocínio (Passando pelos 5 andares do Lóbulo Frontal)
-        x_fc = torch.relu(self.fc1(features))
-        x_fc = torch.relu(self.fc2(x_fc))
-        x_fc = torch.relu(self.fc3(x_fc))
-        x_fc = torch.relu(self.fc4(x_fc))
+        # O Raciocínio (Passando pelos 6 andares do Lóbulo Frontal com Filtros de Ruído)
+        x_fc = self.dropout(torch.relu(self.bn1(self.fc1(features))))
+        x_fc = self.dropout(torch.relu(self.bn2(self.fc2(x_fc))))
+        x_fc = self.dropout(torch.relu(self.bn3(self.fc3(x_fc))))
+        x_fc = self.dropout(torch.relu(self.bn4(self.fc4(x_fc))))
+        x_fc = self.dropout(torch.relu(self.bn5(self.fc5(x_fc))))
         
-        # A última não tem ReLU para não travar a Sigmoid
-        saida = self.fc5(x_fc)
+        # Retorna o "Logit" bruto (sem Sigmoid), pois o PyTorch 2.0 otimiza a matemática na BCEWithLogitsLoss
+        saida = self.fc6(x_fc)
         
-        return self.sigmoid(saida)
+        return saida
 
 def contar_parametros(modelo):
     total = sum(p.numel() for p in modelo.parameters() if p.requires_grad)

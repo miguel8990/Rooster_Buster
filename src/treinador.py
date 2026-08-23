@@ -1,8 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import pandas as pd
-from torch.utils.data import TensorDataset, DataLoader
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.utils.data import Dataset, DataLoader
+import sqlite3
 import json
 import os
 from modelo import ModeradorCNN, contar_parametros
@@ -10,114 +11,167 @@ from modelo import ModeradorCNN, contar_parametros
 # Força o PyTorch a usar todas as 16 Threads do seu Ryzen 7 5700G!
 torch.set_num_threads(16)
 
-def preparar_dataset():
-    print("Carregando bases filtradas e dados sintéticos...")
-    df_told = pd.read_csv("dados/told_br_curto.csv")
-    df_hate = pd.read_csv("dados/hatecheck_curto.csv")
-    df_sint = pd.read_csv("dados/dados_sinteticos.csv")
-    
-    # O TOLD-BR já tem a coluna 'label' com 0 (seguro) e 1 (tóxico)
-    # Não precisamos mexer.
-    
-    # HateCheck: 'hateful' vira 1.0, 'non-hateful' vira 0.0
-    df_hate['label'] = df_hate['label_gold'].apply(lambda x: 1.0 if x == 'hateful' else 0.0)
-    
-    # Sintéticos: Garante que os labels são números de ponto flutuante
-    df_sint['label'] = df_sint['label'].apply(lambda x: 1.0 if float(x) > 0 else 0.0)
-    
-    # Junta os três universos de dados
-    textos = df_told['text'].tolist() + df_hate['test_case'].tolist() + df_sint['text'].tolist()
-    rotulos = df_told['label'].tolist() + df_hate['label'].tolist() + df_sint['label'].tolist()
-    
-    print(f"Total de frases prontas para treino: {len(textos)}")
-    return textos, rotulos
+MAX_LEN = 300
 
-def construir_vocabulario(textos):
-    print("Mapeando todas as letras e símbolos do universo...")
+# ─────────────────────────────────────────────────────────────────────────────
+# Dataset Preguiçoso (Lazy): Nunca carrega tudo na RAM.
+# Mantém só os rowids em memória (~32MB para 4M linhas) e busca cada
+# frase no SQLite apenas quando o DataLoader pede o lote.
+# ─────────────────────────────────────────────────────────────────────────────
+class SQLiteDataset(Dataset):
+    def __init__(self, db_path, vocab, max_len=MAX_LEN):
+        self.db_path = db_path
+        self.vocab = vocab
+        self.max_len = max_len
+
+        # Lê APENAS os rowids e labels — isso é leve e cabe na RAM tranquilo
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT rowid, label FROM frases WHERE CAST(label AS REAL) IS NOT NULL")
+        rows = cur.fetchall()
+        conn.close()
+
+        # Filtra lixo de cabeçalhos que viraram None ou string
+        self.rowids = []
+        self.labels = []
+        for r in rows:
+            try:
+                self.labels.append(float(r[1]))
+                self.rowids.append(r[0])
+            except (TypeError, ValueError):
+                pass
+
+        print(f"📦 Dataset com {len(self.rowids)} amostras indexadas (RAM segura).")
+
+    def __len__(self):
+        return len(self.rowids)
+
+    def __getitem__(self, idx):
+        rowid = self.rowids[idx]
+        label = self.labels[idx]
+
+        # Abre uma conexão por item — SQLite suporta isso com check_same_thread=False
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        cur = conn.cursor()
+        cur.execute("SELECT text FROM frases WHERE rowid = ?", (rowid,))
+        row = cur.fetchone()
+        conn.close()
+
+        texto = str(row[0]).lower() if row else ""
+        seq = [self.vocab.get(c, self.vocab["<UNK>"]) for c in texto]
+
+        if len(seq) > self.max_len:
+            seq = seq[:self.max_len]
+        else:
+            seq = seq + [self.vocab["<PAD>"]] * (self.max_len - len(seq))
+
+        return torch.tensor(seq, dtype=torch.long), torch.tensor([label], dtype=torch.float32)
+
+
+def construir_vocabulario(db_path):
+    print("🔤 Construindo vocabulário (leitura em chunks de 100k)...")
     caracteres_unicos = set()
-    for txt in textos:
-        for char in str(txt):
-            caracteres_unicos.add(char.lower())
-    
-    # ID 0 = PADDING (Espaço Vazio no final da frase)
-    # ID 1 = UNK (Desconhecido - Letras alienígenas que surgirem no futuro)
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+
+    offset = 0
+    chunk = 100_000
+    while True:
+        cur.execute("SELECT text FROM frases LIMIT ? OFFSET ?", (chunk, offset))
+        rows = cur.fetchall()
+        if not rows:
+            break
+        for (txt,) in rows:
+            for char in str(txt).lower():
+                caracteres_unicos.add(char)
+        offset += chunk
+        print(f"   ⏳ {offset} textos escaneados para vocab...")
+
+    conn.close()
+
     vocab = {"<PAD>": 0, "<UNK>": 1}
-    idx = 2
-    for char in sorted(list(caracteres_unicos)):
-        vocab[char] = idx
-        idx += 1
-        
-    print(f"Vocabulário criado com apenas {len(vocab)} caracteres diferentes!")
-    
-    # Salvamos o dicionário, pois a Interface de Teste vai precisar dele para ler textos novos
+    for i, char in enumerate(sorted(caracteres_unicos), start=2):
+        vocab[char] = i
+
+    print(f"✅ Vocabulário: {len(vocab)} caracteres únicos.")
     with open("vocabulario.json", "w", encoding="utf-8") as f:
         json.dump(vocab, f, ensure_ascii=False, indent=2)
-        
     return vocab
 
-def textos_para_tensor(textos, rotulos, vocab, max_len=100):
-    entradas = []
-    gabaritos = []
-    
-    for txt, rotulo in zip(textos, rotulos):
-        txt_str = str(txt).lower()
-        sequencia = []
-        
-        # Converte cada letra pro seu ID matemático
-        for char in txt_str:
-            sequencia.append(vocab.get(char, vocab["<UNK>"]))
-            
-        # Garante que todos os arrays tenham cravados 100 de tamanho
-        if len(sequencia) > max_len:
-            sequencia = sequencia[:max_len]
-        elif len(sequencia) < max_len:
-            sequencia = sequencia + [vocab["<PAD>"]] * (max_len - len(sequencia))
-            
-        entradas.append(sequencia)
-        gabaritos.append([rotulo])
-        
-    return torch.tensor(entradas, dtype=torch.long), torch.tensor(gabaritos, dtype=torch.float32)
+
+def calcular_pos_weight(db_path):
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            SUM(CASE WHEN CAST(label AS REAL) >= 0.5 THEN 1 ELSE 0 END),
+            COUNT(*)
+        FROM frases
+        WHERE CAST(label AS REAL) IS NOT NULL
+    """)
+    toxicos, total = cur.fetchone()
+    conn.close()
+    limpos = total - toxicos
+    peso = limpos / max(toxicos, 1)
+    print(f"⚖️  pos_weight = {peso:.2f}x  ({limpos} seguros / {toxicos} tóxicos)")
+    return torch.tensor([peso], dtype=torch.float32)
+
 
 def treinar_moderador():
-    textos, rotulos = preparar_dataset()
-    vocab = construir_vocabulario(textos)
-    
-    # Transforma texto humano em matemática de matriz
-    x_dados, y_dados = textos_para_tensor(textos, rotulos, vocab, max_len=100)
-    
-    dataset = TensorDataset(x_dados, y_dados)
-    # Batch de 256. Como a rede é microscópica, a CPU mastiga isso rápido.
-    carregador = DataLoader(dataset, batch_size=256, shuffle=True)
-    
-    # Inicializa o Cérebro
+    db_path = "banco/dataset.db"
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"Banco não encontrado: {db_path}. Rode a migração primeiro!")
+
+    vocab = construir_vocabulario(db_path)
+    peso_positivo = calcular_pos_weight(db_path)
+
+    dataset = SQLiteDataset(db_path, vocab)
+
+    # num_workers=0: cada __getitem__ abre/fecha sua conexão SQLite
+    # Sem multiprocessing para evitar conflito de fork com torch.compile
+    carregador = DataLoader(dataset, batch_size=512, shuffle=True, num_workers=0)
+
     modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=32, num_filtros=64)
     contar_parametros(modelo)
-    
-    # Binary Cross Entropy: É a Loss perfeita para respostas de "Sim/Não" (0.0 ou 1.0)
-    criterio = nn.BCELoss()
-    otimizador = optim.Adam(modelo.parameters(), lr=0.001)
-    
+
+    print("⚙️  Compilando a CNN em C++ nativo (pode levar alguns segundos)...")
+    modelo = torch.compile(modelo)
+
+    criterio = nn.BCEWithLogitsLoss(pos_weight=peso_positivo)
+    otimizador = optim.AdamW(modelo.parameters(), lr=0.001, weight_decay=0.01)
+    scheduler = CosineAnnealingLR(otimizador, T_max=10, eta_min=1e-5)
+
     epocas = 10
-    print("Iniciando a Caçada por Padrões Tóxicos!")
-    
+    print("🥊 Iniciando a Caçada por Padrões Tóxicos!\n")
+
     for epoca in range(epocas):
+        modelo.train()
         perda_acumulada = 0.0
-        
+        acertos = 0
+        total_amostras = 0
+
         for lote_x, lote_y in carregador:
-            predicao = modelo(lote_x)
-            perda = criterio(predicao, lote_y)
-            
-            otimizador.zero_grad()
+            otimizador.zero_grad(set_to_none=True)
+            predicao_bruta = modelo(lote_x)
+            perda = criterio(predicao_bruta, lote_y)
             perda.backward()
             otimizador.step()
-            
+
             perda_acumulada += perda.item()
-            
+            classes = (torch.sigmoid(predicao_bruta) >= 0.5).float()
+            acertos += (classes == lote_y).sum().item()
+            total_amostras += lote_y.size(0)
+
+        scheduler.step()
         perda_media = perda_acumulada / len(carregador)
-        print(f"Época [{epoca+1}/{epocas}] | Perda Média (BCELoss): {perda_media:.4f}")
-        
+        acuracia = 100.0 * acertos / total_amostras
+        lr_atual = scheduler.get_last_lr()[0]
+        print(f"Época [{epoca+1:02d}/{epocas}] | Loss: {perda_media:.4f} | Acurácia: {acuracia:.2f}% | LR: {lr_atual:.6f}")
+
+    modelo.eval()
+    os.makedirs("pesos", exist_ok=True)
     torch.save(modelo.state_dict(), "pesos/pesos_moderador.pth")
-    print("\n✅ Rede treinada com sucesso! Pesos salvos em 'pesos/pesos_moderador.pth'")
+    print("\n✅ Rede treinada! Pesos salvos em 'pesos/pesos_moderador.pth'")
 
 if __name__ == "__main__":
     treinar_moderador()
