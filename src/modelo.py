@@ -7,7 +7,7 @@ class ModeradorCNN(nn.Module):
     Ela lê 'janelas' de 3, 4 e 5 letras ao mesmo tempo para identificar 
     padrões visuais de palavrões, ofensa e burla de filtros.
     """
-    def __init__(self, vocab_size, embedding_dim=32, num_filtros=64):
+    def __init__(self, vocab_size, embedding_dim=64, num_filtros=128):
         super(ModeradorCNN, self).__init__()
         
         # 1. Dicionário Embutido (Embedding): Converte a ID da letra em um vetor matemático
@@ -20,26 +20,25 @@ class ModeradorCNN(nn.Module):
         self.conv4 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=4, padding=1)
         self.conv5 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=5, padding=2)
         
-        # 3. Lóbulo Frontal de Decisão (O Cérebro Profundo)
-        # Information Bottleneck: Mais fundo (6 camadas), mais estreito (512)
+        # 3. Lóbulo Frontal de Decisão (O Cérebro Profundo) - Expandido para 1024 Neurônios!
         # Recebe (4 janelas convolucionais) * (Max + Avg) = 8 filtros!
-        self.fc1 = nn.Linear(num_filtros * 8, 512)
-        self.bn1 = nn.BatchNorm1d(512)
+        self.fc1 = nn.Linear(num_filtros * 8, 1024)
+        self.bn1 = nn.BatchNorm1d(1024)
         
-        self.fc2 = nn.Linear(512, 512)
-        self.bn2 = nn.BatchNorm1d(512)
+        self.fc2 = nn.Linear(1024, 1024)
+        self.bn2 = nn.BatchNorm1d(1024)
         
-        self.fc3 = nn.Linear(512, 512)
-        self.bn3 = nn.BatchNorm1d(512)
+        self.fc3 = nn.Linear(1024, 1024)
+        self.bn3 = nn.BatchNorm1d(1024)
         
-        self.fc4 = nn.Linear(512, 512)
-        self.bn4 = nn.BatchNorm1d(512)
+        self.fc4 = nn.Linear(1024, 1024)
+        self.bn4 = nn.BatchNorm1d(1024)
         
-        self.fc5 = nn.Linear(512, 512)
-        self.bn5 = nn.BatchNorm1d(512)
+        self.fc5 = nn.Linear(1024, 1024)
+        self.bn5 = nn.BatchNorm1d(1024)
         
         # A 6ª camada que fará o julgamento final
-        self.fc6 = nn.Linear(512, 1)
+        self.fc6 = nn.Linear(1024, 1)
         
         # O "Esquecimento Programado" (Anti-Decoréba)
         self.dropout = nn.Dropout(0.3)

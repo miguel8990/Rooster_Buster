@@ -131,7 +131,7 @@ def treinar_moderador():
     # Sem multiprocessing para evitar conflito de fork com torch.compile
     carregador = DataLoader(dataset, batch_size=512, shuffle=True, num_workers=0)
 
-    modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=32, num_filtros=64)
+    modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=64, num_filtros=128)
     contar_parametros(modelo)
 
     print("⚙️  Compilando a CNN em C++ nativo (pode levar alguns segundos)...")
@@ -139,10 +139,13 @@ def treinar_moderador():
 
     criterio = nn.BCEWithLogitsLoss(pos_weight=peso_positivo)
     otimizador = optim.AdamW(modelo.parameters(), lr=0.001, weight_decay=0.01)
-    scheduler = CosineAnnealingLR(otimizador, T_max=10, eta_min=1e-5)
+    # CosineAnnealingLR: Diminui o LR suavemente (evita oscilação) - Ajustado para 3 épocas
+    scheduler = CosineAnnealingLR(otimizador, T_max=3, eta_min=1e-5)
 
-    epocas = 10
+    epocas = 3
     print("🥊 Iniciando a Caçada por Padrões Tóxicos!\n")
+
+    os.makedirs("pesos", exist_ok=True)
 
     for epoca in range(epocas):
         modelo.train()
@@ -150,7 +153,7 @@ def treinar_moderador():
         acertos = 0
         total_amostras = 0
 
-        for lote_x, lote_y in carregador:
+        for batch_idx, (lote_x, lote_y) in enumerate(carregador):
             otimizador.zero_grad(set_to_none=True)
             predicao_bruta = modelo(lote_x)
             perda = criterio(predicao_bruta, lote_y)
@@ -161,17 +164,25 @@ def treinar_moderador():
             classes = (torch.sigmoid(predicao_bruta) >= 0.5).float()
             acertos += (classes == lote_y).sum().item()
             total_amostras += lote_y.size(0)
+            
+            # Printa o progresso a cada 1000 lotes (para 4M dados, são ~8300 lotes por época)
+            if (batch_idx + 1) % 1000 == 0:
+                print(f"   ⏳ Época {epoca+1} - Progresso: Lote {batch_idx+1}/{len(carregador)} ({(batch_idx+1)/len(carregador)*100:.1f}%)")
 
         scheduler.step()
         perda_media = perda_acumulada / len(carregador)
         acuracia = 100.0 * acertos / total_amostras
         lr_atual = scheduler.get_last_lr()[0]
-        print(f"Época [{epoca+1:02d}/{epocas}] | Loss: {perda_media:.4f} | Acurácia: {acuracia:.2f}% | LR: {lr_atual:.6f}")
+        print(f"✅ Época [{epoca+1:02d}/{epocas}] CONCLUÍDA | Loss: {perda_media:.4f} | Acurácia: {acuracia:.2f}% | LR: {lr_atual:.6f}")
+        
+        # Salva o checkpoint (backup) da época atual para que você possa usar mesmo se não terminar tudo!
+        checkpoint_path = f"pesos/pesos_moderador_ep{epoca+1}.pth"
+        torch.save(modelo.state_dict(), checkpoint_path)
+        print(f"   💾 Checkpoint salvo em: {checkpoint_path}\n")
 
     modelo.eval()
-    os.makedirs("pesos", exist_ok=True)
     torch.save(modelo.state_dict(), "pesos/pesos_moderador.pth")
-    print("\n✅ Rede treinada! Pesos salvos em 'pesos/pesos_moderador.pth'")
+    print("🎯 Rede treinada com sucesso! Pesos finais salvos em 'pesos/pesos_moderador.pth'")
 
 if __name__ == "__main__":
     treinar_moderador()
