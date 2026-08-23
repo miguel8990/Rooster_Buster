@@ -1,3 +1,4 @@
+import gc
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -20,44 +21,35 @@ MAX_LEN = 300
 # ─────────────────────────────────────────────────────────────────────────────
 class SQLiteDataset(Dataset):
     def __init__(self, db_path, vocab, max_len=MAX_LEN):
-        self.db_path = db_path
         self.vocab = vocab
         self.max_len = max_len
 
-        # Lê APENAS os rowids e labels — isso é leve e cabe na RAM tranquilo
+        print("📥 Carregando textos puros para a RAM (leve e ultra-rápido)...")
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
-        cur.execute("SELECT rowid, label FROM frases WHERE CAST(label AS REAL) IS NOT NULL")
+        cur.execute("SELECT text, label FROM frases WHERE CAST(label AS REAL) IS NOT NULL")
         rows = cur.fetchall()
         conn.close()
 
-        # Filtra lixo de cabeçalhos que viraram None ou string
-        self.rowids = []
+        # Filtra lixo de cabeçalhos e guarda só strings
+        self.textos = []
         self.labels = []
         for r in rows:
             try:
                 self.labels.append(float(r[1]))
-                self.rowids.append(r[0])
+                self.textos.append(str(r[0]).lower())
             except (TypeError, ValueError):
                 pass
 
-        print(f"📦 Dataset com {len(self.rowids)} amostras indexadas (RAM segura).")
+        print(f"📦 Dataset com {len(self.textos)} amostras em memória (pronto para voar).")
 
     def __len__(self):
-        return len(self.rowids)
+        return len(self.textos)
 
     def __getitem__(self, idx):
-        rowid = self.rowids[idx]
+        texto = self.textos[idx]
         label = self.labels[idx]
 
-        # Abre uma conexão por item — SQLite suporta isso com check_same_thread=False
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        cur = conn.cursor()
-        cur.execute("SELECT text FROM frases WHERE rowid = ?", (rowid,))
-        row = cur.fetchone()
-        conn.close()
-
-        texto = str(row[0]).lower() if row else ""
         seq = [self.vocab.get(c, self.vocab["<UNK>"]) for c in texto]
 
         if len(seq) > self.max_len:
@@ -69,23 +61,23 @@ class SQLiteDataset(Dataset):
 
 
 def construir_vocabulario(db_path):
-    print("🔤 Construindo vocabulário (leitura em chunks de 100k)...")
+    print("🔤 Construindo vocabulário (O(1) Memory)...")
     caracteres_unicos = set()
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
 
-    offset = 0
-    chunk = 100_000
-    while True:
-        cur.execute("SELECT text FROM frases LIMIT ? OFFSET ?", (chunk, offset))
-        rows = cur.fetchall()
-        if not rows:
-            break
-        for (txt,) in rows:
+    # Leitura iterativa nativa: o próprio cursor gerencia o fluxo sem travar a RAM e sem a lentidão de OFFSET
+    cur.execute("SELECT text FROM frases")
+    
+    count = 0
+    for (txt,) in cur:
+        if txt:
             for char in str(txt).lower():
                 caracteres_unicos.add(char)
-        offset += chunk
-        print(f"   ⏳ {offset} textos escaneados para vocab...")
+        
+        count += 1
+        if count % 500_000 == 0:
+            print(f"   ⏳ {count} textos escaneados para vocab...")
 
     conn.close()
 
@@ -127,9 +119,11 @@ def treinar_moderador():
 
     dataset = SQLiteDataset(db_path, vocab)
 
-    # num_workers=0: cada __getitem__ abre/fecha sua conexão SQLite
-    # Sem multiprocessing para evitar conflito de fork com torch.compile
-    carregador = DataLoader(dataset, batch_size=512, shuffle=True, num_workers=0)
+    # Dataloader Multi-Core blindado contra vazamentos:
+    # persistent_workers=False (limpa a RAM na virada de época)
+    # drop_last=True (Evita que lotes picados causem memory leak no torch.compile)
+    carregador = DataLoader(dataset, batch_size=512, shuffle=True, num_workers=4,
+                            prefetch_factor=2, persistent_workers=False, drop_last=True)
 
     modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=64, num_filtros=128)
     contar_parametros(modelo)
@@ -161,13 +155,18 @@ def treinar_moderador():
             otimizador.step()
 
             perda_acumulada += perda.item()
-            classes = (torch.sigmoid(predicao_bruta) >= 0.5).float()
-            acertos += (classes == lote_y).sum().item()
+            
+            # Cálculo de acurácia totalmente desvinculado do grafo (evita memory leak)
+            with torch.no_grad():
+                classes = (torch.sigmoid(predicao_bruta.detach()) >= 0.5).float()
+                acertos += (classes == lote_y).sum().item()
+            
             total_amostras += lote_y.size(0)
             
-            # Printa o progresso a cada 1000 lotes (para 4M dados, são ~8300 lotes por época)
+            # Printa o progresso a cada 1000 lotes e força limpeza do lixo acumulado
             if (batch_idx + 1) % 1000 == 0:
                 print(f"   ⏳ Época {epoca+1} - Progresso: Lote {batch_idx+1}/{len(carregador)} ({(batch_idx+1)/len(carregador)*100:.1f}%)")
+                gc.collect()
 
         scheduler.step()
         perda_media = perda_acumulada / len(carregador)
@@ -175,10 +174,11 @@ def treinar_moderador():
         lr_atual = scheduler.get_last_lr()[0]
         print(f"✅ Época [{epoca+1:02d}/{epocas}] CONCLUÍDA | Loss: {perda_media:.4f} | Acurácia: {acuracia:.2f}% | LR: {lr_atual:.6f}")
         
-        # Salva o checkpoint (backup) da época atual para que você possa usar mesmo se não terminar tudo!
+        # Salva o checkpoint e força o esvaziamento do Lixo da RAM
         checkpoint_path = f"pesos/pesos_moderador_ep{epoca+1}.pth"
         torch.save(modelo.state_dict(), checkpoint_path)
         print(f"   💾 Checkpoint salvo em: {checkpoint_path}\n")
+        gc.collect()
 
     modelo.eval()
     torch.save(modelo.state_dict(), "pesos/pesos_moderador.pth")

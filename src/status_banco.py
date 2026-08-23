@@ -21,6 +21,10 @@ def exibir_status_banco():
         total = cur.fetchone()[0]
         print(f"\n📈 TOTAL DE FRASES: {total:,}".replace(',', '.'))
         
+        if total == 0:
+            print("\nO banco de dados está vazio no momento.")
+            return
+        
         # 2. Divisão por Origem
         print("\n📂 DIVISÃO POR DATASET (Origem):")
         cur.execute('SELECT origem, COUNT(*) FROM frases GROUP BY origem ORDER BY COUNT(*) DESC')
