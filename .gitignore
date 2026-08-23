@@ -19,7 +19,11 @@ dados
 .venv
 # Mono auto generated files
 mono_crash.*
-
+.aider.chat.history.md
+.aider.input.history
+.aider.tags.cache.v4/
+banco/
+pesos/
 # Build results
 [Dd]ebug/
 [Dd]ebugPublic/
