@@ -7,10 +7,14 @@ import json
 import os
 from modelo import ModeradorCNN, contar_parametros
 
+# Força o PyTorch a usar todas as 16 Threads do seu Ryzen 7 5700G!
+torch.set_num_threads(16)
+
 def preparar_dataset():
-    print("Carregando bases filtradas...")
+    print("Carregando bases filtradas e dados sintéticos...")
     df_told = pd.read_csv("dados/told_br_curto.csv")
     df_hate = pd.read_csv("dados/hatecheck_curto.csv")
+    df_sint = pd.read_csv("dados/dados_sinteticos.csv")
     
     # O TOLD-BR já tem a coluna 'label' com 0 (seguro) e 1 (tóxico)
     # Não precisamos mexer.
@@ -18,9 +22,12 @@ def preparar_dataset():
     # HateCheck: 'hateful' vira 1.0, 'non-hateful' vira 0.0
     df_hate['label'] = df_hate['label_gold'].apply(lambda x: 1.0 if x == 'hateful' else 0.0)
     
-    # Junta os dois universos de dados
-    textos = df_told['text'].tolist() + df_hate['test_case'].tolist()
-    rotulos = df_told['label'].tolist() + df_hate['label'].tolist()
+    # Sintéticos: Garante que os labels são números de ponto flutuante
+    df_sint['label'] = df_sint['label'].apply(lambda x: 1.0 if float(x) > 0 else 0.0)
+    
+    # Junta os três universos de dados
+    textos = df_told['text'].tolist() + df_hate['test_case'].tolist() + df_sint['text'].tolist()
+    rotulos = df_told['label'].tolist() + df_hate['label'].tolist() + df_sint['label'].tolist()
     
     print(f"Total de frases prontas para treino: {len(textos)}")
     return textos, rotulos
@@ -109,8 +116,8 @@ def treinar_moderador():
         perda_media = perda_acumulada / len(carregador)
         print(f"Época [{epoca+1}/{epocas}] | Perda Média (BCELoss): {perda_media:.4f}")
         
-    torch.save(modelo.state_dict(), "pesos_moderador.pth")
-    print("\n✅ Rede treinada com sucesso! Pesos salvos em 'pesos_moderador.pth'")
+    torch.save(modelo.state_dict(), "pesos/pesos_moderador.pth")
+    print("\n✅ Rede treinada com sucesso! Pesos salvos em 'pesos/pesos_moderador.pth'")
 
 if __name__ == "__main__":
     treinar_moderador()

@@ -20,9 +20,13 @@ class ModeradorCNN(nn.Module):
         self.conv4 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=4, padding=1)
         self.conv5 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=5, padding=2)
         
-        # 3. Funil de Decisão Final
-        # Juntamos as descobertas das 4 lentes agora (64 filtros * 4 = 256 sinais)
-        self.fc = nn.Linear(num_filtros * 4, 1)
+        # 3. Lóbulo Frontal de Decisão (O Cérebro Profundo)
+        # O usuário pediu Força Bruta: 5 camadas gigantes de 1024 neurônios!
+        self.fc1 = nn.Linear(num_filtros * 4, 1024)
+        self.fc2 = nn.Linear(1024, 1024)
+        self.fc3 = nn.Linear(1024, 1024)
+        self.fc4 = nn.Linear(1024, 1024)
+        self.fc5 = nn.Linear(1024, 1)
         
         # A Sigmoid garante que a resposta final fique perfeitamente espremida entre 0.0 (Anjo) e 1.0 (Banido)
         self.sigmoid = nn.Sigmoid()
@@ -54,8 +58,15 @@ class ModeradorCNN(nn.Module):
         # Junta todas as "provas" criminais que a rede achou
         features = torch.cat((c2, c3, c4, c5), dim=1)
         
-        # Dá a sentença final
-        saida = self.fc(features)
+        # O Raciocínio (Passando pelos 5 andares do Lóbulo Frontal)
+        x_fc = torch.relu(self.fc1(features))
+        x_fc = torch.relu(self.fc2(x_fc))
+        x_fc = torch.relu(self.fc3(x_fc))
+        x_fc = torch.relu(self.fc4(x_fc))
+        
+        # A última não tem ReLU para não travar a Sigmoid
+        saida = self.fc5(x_fc)
+        
         return self.sigmoid(saida)
 
 def contar_parametros(modelo):
