@@ -6,6 +6,7 @@
 # dotenv files
 .env
 banco
+tutorias
 # User-specific files
 *.rsuser
 *.suo
