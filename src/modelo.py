@@ -7,7 +7,7 @@ class ModeradorCNN(nn.Module):
     Ao invés de ler imagens, essa IA lê "janelas" de letras em um texto.
     Ela procura por padrões visuais de palavrões (ex: v,t,n,c) e tons de ofensa.
     """
-    def __init__(self, vocab_size, embedding_dim=64, num_filtros=64):
+    def __init__(self, vocab_size, embedding_dim=32, num_filtros=64):
         super(ModeradorCNN, self).__init__()
         
         # 1. CAMADA DE EMBUTIMENTO (Embedding)

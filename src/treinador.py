@@ -234,12 +234,12 @@ def treinar_moderador():
     train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size], generator=gerador)
     
     # Usando 2 ajudantes (workers) agora que o NumPy nos blindou contra o vazamento de memória (COW) do Linux
-    carregador_treino = DataLoader(train_dataset, batch_size=1024, shuffle=True, num_workers=4, drop_last=True)
-    carregador_val = DataLoader(val_dataset, batch_size=1024, shuffle=False, num_workers=0, drop_last=False)
+    carregador_treino = DataLoader(train_dataset, batch_size=512, shuffle=True, num_workers=4, drop_last=True)
+    carregador_val = DataLoader(val_dataset, batch_size=512, shuffle=False, num_workers=0, drop_last=False)
 
     
     # 3. Criando o Cérebro
-    modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=64, num_filtros=64).to(device)
+    modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=32, num_filtros=64).to(device)
     contar_parametros(modelo)
     
     # 4. As Leis e Ferramentas de Treino
