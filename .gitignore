@@ -3,6 +3,7 @@
 ##
 ## Get latest from `dotnet new gitignore`
 tutorias
+relatorios
 # dotenv files
 .env
 banco

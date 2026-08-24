@@ -21,10 +21,10 @@ class ModeradorCNN(nn.Module):
         # kernel_size=2: Lê de 2 em 2 letras (excelente para abreviações como "fd", "vs").
         # kernel_size=3: Lê de 3 em 3 letras (sílabas curtas).
         # Cada 'lente' tem 128 filtros, ou seja, ela caça 128 padrões tóxicos diferentes.
-        self.conv2 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=2, padding=1)
-        self.conv3 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=3, padding=1)
-        self.conv4 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=4, padding=1)
-        self.conv5 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=5, padding=2)
+        self.conv2 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=2, padding='same')
+        self.conv3 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=3, padding='same')
+        self.conv4 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=4, padding='same')
+        self.conv5 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=5, padding='same')
         
         # 3. O CÉREBRO PROFUNDO (Lóbulo Frontal / Fully Connected Layers)
         # Após a CNN encontrar os "indícios" criminais nas letras, nós juntamos tudo.

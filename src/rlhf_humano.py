@@ -18,7 +18,7 @@ def rlhf_humano():
         vocab = json.load(f)
         
     modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=64, num_filtros=128)
-    state_dict = torch.load("pesos/pesos_moderador.pth", weights_only=True)
+    state_dict = torch.load("pesos/pesos_moderador.pth", weights_only=True, map_location='cpu')
     state_dict_limpo = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
     modelo.load_state_dict(state_dict_limpo)
     modelo.eval()
