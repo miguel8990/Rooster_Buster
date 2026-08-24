@@ -3,27 +3,35 @@ import torch.nn as nn
 
 class ModeradorCNN(nn.Module):
     """
-    Arquitetura Convolucional 1D (CNN-1D) para leitura de caracteres.
-    Ela lê 'janelas' de 3, 4 e 5 letras ao mesmo tempo para identificar 
-    padrões visuais de palavrões, ofensa e burla de filtros.
+    Arquitetura Convolucional 1D (CNN-1D).
+    Ao invés de ler imagens, essa IA lê "janelas" de letras em um texto.
+    Ela procura por padrões visuais de palavrões (ex: v,t,n,c) e tons de ofensa.
     """
     def __init__(self, vocab_size, embedding_dim=64, num_filtros=128):
         super(ModeradorCNN, self).__init__()
         
-        # 1. Dicionário Embutido (Embedding): Converte a ID da letra em um vetor matemático
+        # 1. CAMADA DE EMBUTIMENTO (Embedding)
+        # O computador não lê a letra 'A'. Ele recebe o ID '10'. 
+        # O Embedding é um Dicionário que transforma o ID '10' num vetor de 64 dimensões.
+        # É aqui que a rede aprende que certas letras ou símbolos têm "significados" parecidos.
         self.embedding = nn.Embedding(num_embeddings=vocab_size, embedding_dim=embedding_dim, padding_idx=0)
         
-        # 2. Convoluções: As "lentes de aumento" que varrem a frase.
-        # Adicionamos a conv2 graças à sua visão de detecção de ofensas de 2 letras!
+        # 2. LENTES CONVOLUCIONAIS (Filtros de Padrões)
+        # Conv1d desliza sobre o texto como uma janela.
+        # kernel_size=2: Lê de 2 em 2 letras (excelente para abreviações como "fd", "vs").
+        # kernel_size=3: Lê de 3 em 3 letras (sílabas curtas).
+        # Cada 'lente' tem 128 filtros, ou seja, ela caça 128 padrões tóxicos diferentes.
         self.conv2 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=2, padding=1)
         self.conv3 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=3, padding=1)
         self.conv4 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=4, padding=1)
         self.conv5 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=5, padding=2)
         
-        # 3. Lóbulo Frontal de Decisão (O Cérebro Profundo) - Expandido para 1024 Neurônios!
-        # Recebe (4 janelas convolucionais) * (Max + Avg) = 8 filtros!
+        # 3. O CÉREBRO PROFUNDO (Lóbulo Frontal / Fully Connected Layers)
+        # Após a CNN encontrar os "indícios" criminais nas letras, nós juntamos tudo.
+        # 4 lentes * 2 tipos de análise (Max e Avg) = 8 pacotes de informação.
+        # Multiplicado pelos 128 filtros = 1024 conexões de entrada.
         self.fc1 = nn.Linear(num_filtros * 8, 1024)
-        self.bn1 = nn.BatchNorm1d(1024)
+        self.bn1 = nn.BatchNorm1d(1024) # Normaliza os dados (impede que números explodam)
         
         self.fc2 = nn.Linear(1024, 1024)
         self.bn2 = nn.BatchNorm1d(1024)
@@ -37,56 +45,70 @@ class ModeradorCNN(nn.Module):
         self.fc5 = nn.Linear(1024, 1024)
         self.bn5 = nn.BatchNorm1d(1024)
         
-        # A 6ª camada que fará o julgamento final
+        # CAMADA FINAL (A Decisão)
+        # Transforma os 1024 neurônios em apenas 1 único número: o Veredito (Tóxico ou Seguro).
         self.fc6 = nn.Linear(1024, 1)
         
-        # O "Esquecimento Programado" (Anti-Decoréba)
+        # DROPOUT (Amnésia Programada)
+        # Desliga 30% dos neurônios aleatoriamente durante o treino. 
+        # Isso força a rede a não depender de neurônios viciados (decoréba) e a generalizar melhor.
         self.dropout = nn.Dropout(0.3)
 
     def forward(self, x):
-        # x tem formato: [Lote, 300 caracteres]
-        x_emb = self.embedding(x) 
-        # Após embutir: [Lote, 300 caracteres, 32 Dimensões]
+        """
+        O 'forward' é o caminho que a frase faz da entrada até a saída da IA.
+        """
+        # Entrada x: Lote de frases traduzidas em números [ex: 512 frases, 300 letras]
         
-        # A Conv1d no PyTorch exige que a dimensão seja [Lote, Canais, Comprimento]
+        # Transforma IDs simples nas matrizes profundas de 64 dimensões.
+        x_emb = self.embedding(x) 
+        
+        # O PyTorch exige que os 'Canais' fiquem no meio. 
+        # Permute inverte as dimensões de [512, 300, 64] para [512, 64, 300].
         x_emb = x_emb.permute(0, 2, 1)
         
-        # Lente 0 (Duplas de letras)
-        c2 = torch.relu(self.conv2(x_emb))
-        c2_max = torch.max(c2, dim=2)[0]
-        c2_avg = torch.mean(c2, dim=2)
+        # Lente de 2 letras
+        c2 = torch.relu(self.conv2(x_emb)) # ReLU = ignora números negativos
+        c2_max = torch.max(c2, dim=2)[0]   # Pooling Máximo: Pega o sinal MAIS FORTE que essa lente achou na frase
+        c2_avg = torch.mean(c2, dim=2)     # Pooling Médio: Tira uma média do tom geral da frase
         
-        # Lente 1 (Trincas de letras)
+        # Lente de 3 letras
         c3 = torch.relu(self.conv3(x_emb))
         c3_max = torch.max(c3, dim=2)[0] 
         c3_avg = torch.mean(c3, dim=2)
         
-        # Lente 2 (Quartetos de letras)
+        # Lente de 4 letras
         c4 = torch.relu(self.conv4(x_emb))
         c4_max = torch.max(c4, dim=2)[0] 
         c4_avg = torch.mean(c4, dim=2)
         
-        # Lente 3 (Quintetos de letras)
+        # Lente de 5 letras
         c5 = torch.relu(self.conv5(x_emb))
         c5_max = torch.max(c5, dim=2)[0] 
         c5_avg = torch.mean(c5, dim=2)
         
-        # Junta Provas Criminais de Pico Máximo + O Tom Geral (Média) da Frase
+        # CONCATENAÇÃO: Junta as provas fortes (Max) e os contextos (Avg) de todas as lentes num só vetor.
         features = torch.cat((c2_max, c2_avg, c3_max, c3_avg, c4_max, c4_avg, c5_max, c5_avg), dim=1)
         
-        # O Raciocínio (Passando pelos 6 andares do Lóbulo Frontal com Filtros de Ruído)
+        # O PENSAMENTO PROFUNDO
+        # A informação passa pelos 5 andares neurais, sofrendo filtragem (BatchNorm) e esquecimento (Dropout)
         x_fc = self.dropout(torch.relu(self.bn1(self.fc1(features))))
         x_fc = self.dropout(torch.relu(self.bn2(self.fc2(x_fc))))
         x_fc = self.dropout(torch.relu(self.bn3(self.fc3(x_fc))))
         x_fc = self.dropout(torch.relu(self.bn4(self.fc4(x_fc))))
         x_fc = self.dropout(torch.relu(self.bn5(self.fc5(x_fc))))
         
-        # Retorna o "Logit" bruto (sem Sigmoid), pois o PyTorch 2.0 otimiza a matemática na BCEWithLogitsLoss
+        # SAÍDA BRUTA (Logit)
+        # Não passamos a ativação Sigmoid aqui, apenas o número bruto. 
+        # A função de Perda (BCEWithLogitsLoss) do PyTorch é mais rápida calculando Sigmoid por lá!
         saida = self.fc6(x_fc)
         
         return saida
 
 def contar_parametros(modelo):
+    """
+    Soma todos os neurônios e conexões que podem aprender algo (requires_grad).
+    """
     total = sum(p.numel() for p in modelo.parameters() if p.requires_grad)
     peso_mb = (total * 4) / (1024 * 1024)
     print("========================================")
