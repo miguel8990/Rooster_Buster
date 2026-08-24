@@ -18,8 +18,8 @@ def clube_da_luta():
     with open("vocabulario.json", "r", encoding="utf-8") as f:
         vocab = json.load(f)
         
-    cnn = ModeradorCNN(vocab_size=len(vocab), embedding_dim=64, num_filtros=128)
-    state_dict = torch.load("pesos/pesos_moderador.pth", weights_only=True)
+    cnn = ModeradorCNN(vocab_size=len(vocab), embedding_dim=64, num_filtros=64)
+    state_dict = torch.load("pesos/pesos_moderador.pth", weights_only=True, map_location='cpu')
     state_dict_limpo = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
     cnn.load_state_dict(state_dict_limpo)
     cnn.eval()

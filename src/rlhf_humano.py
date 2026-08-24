@@ -17,7 +17,7 @@ def rlhf_humano():
     with open("vocabulario.json", "r", encoding="utf-8") as f:
         vocab = json.load(f)
         
-    modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=64, num_filtros=128)
+    modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=64, num_filtros=64)
     state_dict = torch.load("pesos/pesos_moderador.pth", weights_only=True, map_location='cpu')
     state_dict_limpo = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
     modelo.load_state_dict(state_dict_limpo)
@@ -54,6 +54,8 @@ def rlhf_humano():
             with torch.no_grad():
                 pred = torch.sigmoid(modelo(tensor)).item()
             latencia = (time.time() - t0) * 1000
+            
+            del tensor # Limpeza higiênica da memória
             
             classe = 1 if pred >= 0.5 else 0
             emoji = "🔴 TÓXICO" if classe == 1 else "🟢 SEGURO"

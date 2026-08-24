@@ -9,6 +9,22 @@ import json
 import os
 import numpy as np
 import random
+import time
+import logging
+import resource
+
+os.makedirs("Logs", exist_ok=True)
+
+logging.basicConfig(
+    filename=f"Logs/treinador{time.time():.0f}.log",
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+# Otimizações extremas para CPU Ryzen (Apenas Núcleos Físicos)
+os.environ["OMP_NUM_THREADS"] = "8"
+torch.set_num_threads(8)
+torch.set_flush_denormal(True)
 
 SEED = 42
 torch.manual_seed(SEED)
@@ -116,12 +132,10 @@ class SQLiteDataset(Dataset):
         """
         Quando o PyTorch pede a frase número 'idx', nós recortamos aquela fatia.
         Agora entregamos 3 coisas: O Texto (X), o Gabarito (Y) e a Importância dela (W).
+        Retornamos NumPy puro para evitar criar 3 objetos Tensor por amostra.
+        O DataLoader converte tudo em Tensor de uma vez só no final (muito mais rápido).
         """
-        return (
-            torch.from_numpy(self.X[idx]).long(), 
-            torch.tensor([self.Y[idx]], dtype=torch.float32),
-            torch.tensor([self.W[idx]], dtype=torch.float32)
-        )
+        return self.X[idx], np.array([self.Y[idx]]), np.array([self.W[idx]])
 
 
 def construir_vocabulario(db_path):
@@ -219,12 +233,13 @@ def treinar_moderador():
     gerador = torch.Generator().manual_seed(SEED)
     train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size], generator=gerador)
     
-    carregador_treino = DataLoader(train_dataset, batch_size=512, shuffle=True, num_workers=0, drop_last=True)
-    carregador_val = DataLoader(val_dataset, batch_size=512, shuffle=False, num_workers=0, drop_last=False)
+    # Usando 2 ajudantes (workers) agora que o NumPy nos blindou contra o vazamento de memória (COW) do Linux
+    carregador_treino = DataLoader(train_dataset, batch_size=1024, shuffle=True, num_workers=4, drop_last=True)
+    carregador_val = DataLoader(val_dataset, batch_size=1024, shuffle=False, num_workers=0, drop_last=False)
 
     
     # 3. Criando o Cérebro
-    modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=64, num_filtros=128).to(device)
+    modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=64, num_filtros=64).to(device)
     contar_parametros(modelo)
     
     # 4. As Leis e Ferramentas de Treino
@@ -247,11 +262,15 @@ def treinar_moderador():
         acertos = 0
         total_amostras = 0
 
+        t_dados_start = time.time()
+        
         # O Loop Interno: Bate ponto e aprende! (Agora recebendo também o lote_w)
         for batch_idx, (lote_x, lote_y, lote_w) in enumerate(carregador_treino):
+            t_dados = time.time() - t_dados_start
+            t_comp_start = time.time()
             
             # Envia os dados para a CPU ou Placa de Vídeo (O que estiver livre)
-            lote_x = lote_x.to(device, non_blocking=True)
+            lote_x = lote_x.to(device, non_blocking=True).long() # Conversão de 1024 frases em bloco via C++ (Turbo)
             lote_y = lote_y.to(device, non_blocking=True)
             lote_w = lote_w.to(device, non_blocking=True)
             
@@ -259,44 +278,48 @@ def treinar_moderador():
             otimizador.zero_grad(set_to_none=True)
             
             # Forward: O Estudante tenta adivinhar a resposta (Faz a prova)
-            # O .view_as é uma blindagem matemática! Ele trava as respostas no formato exato 
-            # do gabarito (lote_y) para impedir erros de "Broadcasting" que corromperiam o treino.
+            # Removemos a Precisão Mista (BFloat16), pois processadores sem AVX-512 emulam 
+            # ela no software de forma letalmente lenta. Vamos usar Float32 Nativo.
             predicao_bruta = modelo(lote_x).view_as(lote_y)
             
-            # Loss Bruta: O Juiz entrega a lista com os 512 erros da prova separadamente.
+            # Loss Bruta: O Juiz entrega a lista com os 1024 erros da prova separadamente.
             perda_bruta = criterio(predicao_bruta, lote_y)
             
-            # Loss Ponderada: Multiplica o erro de cada frase pela sua "Importância" (1x, 5x ou 10x)
-            # Se a frase for sua (10x) e a IA errou, o erro de repente fica 10 vezes maior.
-            # E só depois de multiplicar nós tiramos a `.mean()` (média) para dar a bronca.
+            # Loss Ponderada: Multiplica o erro de cada frase pela sua "Importância" VIP.
             perda_com_peso = (perda_bruta * lote_w).mean()
             
             # Backward: O Juiz pega a prova errada e rastreia qual neurônio causou o erro
+            # (feito fora do autocast por segurança matemática)
             perda_com_peso.backward()
             
             # Step: O professor aperta ou afrouxa as conexões dos neurônios culpados
             otimizador.step()
 
-            # Estática e Acertos
+            # Apenas rastreamos a perda (Loss). Removemos o cálculo de Sigmoid/Acurácia 
+            # daqui de dentro para não gastar poder de CPU à toa no loop quente!
             perda_acumulada += perda_com_peso.item()
-            
-            # torch.no_grad(): Desliga a gravação matemática para não consumir memória
-            with torch.no_grad():
-                classes = (torch.sigmoid(predicao_bruta.detach()) >= 0.5).float()
-                acertos += (classes == lote_y).sum().item()
-            
             total_amostras += lote_y.size(0)
             
-            # Printa o progresso para acalmar nossa ansiedade e limpa a RAM
-            if (batch_idx + 1) % 1000 == 0:
+            t_comp = time.time() - t_comp_start
+            
+            # Printa o progresso e loga a performance
+            if (batch_idx + 1) % 100 == 0:
+                ram_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
                 print(f"   ⏳ Época {epoca+1} - Progresso: Lote {batch_idx+1}/{len(carregador_treino)} ({(batch_idx+1)/len(carregador_treino)*100:.1f}%)")
+                logging.info(f"[RESUMO Lote {batch_idx+1}] Tempo Total IA: {t_comp:.4f}s | RAM Pico: {ram_mb:.1f} MB")
+                
+            if (batch_idx + 1) % 2000 == 0:
                 gc.collect()
+                
+            t_dados_start = time.time()
 
         scheduler.step()
         perda_media = perda_acumulada / len(carregador_treino)
-        acuracia = 100.0 * acertos / total_amostras
+        print(f"📊 Fim da Época {epoca+1} | Loss do Treino: {perda_media:.4f}")
         
-        # --- FASE DE VALIDAÇÃO (Aplicando a Prova Surpresa) ---
+        # ------------------------------------------------------------------
+        # FASE DE VALIDAÇÃO (A PROVA SURPRESA)
+        # ------------------------------------------------------------------
         modelo.eval()
         perda_val_acumulada = 0.0
         acertos_val = 0
@@ -304,10 +327,11 @@ def treinar_moderador():
         
         with torch.no_grad():
             for lote_x, lote_y, lote_w in carregador_val:
-                lote_x = lote_x.to(device, non_blocking=True)
+                lote_x = lote_x.to(device, non_blocking=True).long()
                 lote_y = lote_y.to(device, non_blocking=True)
                 lote_w = lote_w.to(device, non_blocking=True)
                 
+                # Validação em Float32 nativo
                 predicao = modelo(lote_x).view_as(lote_y)
                 perda_bruta = criterio(predicao, lote_y)
                 perda_com_peso = (perda_bruta * lote_w).mean()
@@ -317,11 +341,14 @@ def treinar_moderador():
                 acertos_val += (classes == lote_y).sum().item()
                 total_val += lote_y.size(0)
                 
-        perda_val = perda_val_acumulada / len(carregador_val) if len(carregador_val) > 0 else 0.0
-        acuracia_val = 100.0 * acertos_val / total_val if total_val > 0 else 0.0
-
-        lr_atual = scheduler.get_last_lr()[0]
-        print(f"✅ Época [{epoca+1:02d}/{epocas}] | Treino (Loss: {perda_media:.4f} | Acc: {acuracia:.2f}%) 🛡️ Validação (Loss: {perda_val:.4f} | Acc: {acuracia_val:.2f}%) | LR: {lr_atual:.6f}")
+        perda_val_media = perda_val_acumulada / len(carregador_val) if len(carregador_val) > 0 else 0.0
+        acuracia_val = acertos_val / total_val if total_val > 0 else 0.0
+        
+        print("="*50)
+        print(f"🏆 RESULTADOS DA ÉPOCA {epoca+1}:")
+        print(f"📉 Loss Treino: {perda_media:.4f} | 📉 Loss Validação: {perda_val_media:.4f}")
+        print(f"🎯 Acurácia na Prova Surpresa: {acuracia_val*100:.2f}%")
+        print("="*50)
         
         # O Salva-Vidas: Guarda um backup a cada Época caso falte energia.
         checkpoint_path = f"pesos/pesos_moderador_ep{epoca+1}.pth"

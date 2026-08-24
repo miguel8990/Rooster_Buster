@@ -7,7 +7,7 @@ class ModeradorCNN(nn.Module):
     Ao invés de ler imagens, essa IA lê "janelas" de letras em um texto.
     Ela procura por padrões visuais de palavrões (ex: v,t,n,c) e tons de ofensa.
     """
-    def __init__(self, vocab_size, embedding_dim=64, num_filtros=128):
+    def __init__(self, vocab_size, embedding_dim=64, num_filtros=64):
         super(ModeradorCNN, self).__init__()
         
         # 1. CAMADA DE EMBUTIMENTO (Embedding)
@@ -21,33 +21,33 @@ class ModeradorCNN(nn.Module):
         # kernel_size=2: Lê de 2 em 2 letras (excelente para abreviações como "fd", "vs").
         # kernel_size=3: Lê de 3 em 3 letras (sílabas curtas).
         # Cada 'lente' tem 128 filtros, ou seja, ela caça 128 padrões tóxicos diferentes.
-        self.conv2 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=2, padding='same')
-        self.conv3 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=3, padding='same')
-        self.conv4 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=4, padding='same')
-        self.conv5 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=5, padding='same')
+        # Trocamos o padding='same' (que derruba a velocidade na CPU) por paddings fixos simétricos (1 e 2).
+        # Como usamos Global Pooling depois, o tamanho não precisa ser estritamente 300, 
+        # e isso destrava a aceleração de hardware nativa (AVX2/MKL) do seu Ryzen!
+        self.conv2 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=2, padding=1)
+        self.conv3 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=3, padding=1)
+        self.conv4 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=4, padding=2)
+        self.conv5 = nn.Conv1d(in_channels=embedding_dim, out_channels=num_filtros, kernel_size=5, padding=2)
         
         # 3. O CÉREBRO PROFUNDO (Lóbulo Frontal / Fully Connected Layers)
         # Após a CNN encontrar os "indícios" criminais nas letras, nós juntamos tudo.
         # 4 lentes * 2 tipos de análise (Max e Avg) = 8 pacotes de informação.
         # Multiplicado pelos 128 filtros = 1024 conexões de entrada.
-        self.fc1 = nn.Linear(num_filtros * 8, 1024)
-        self.bn1 = nn.BatchNorm1d(1024) # Normaliza os dados (impede que números explodam)
+        self.fc1 = nn.Linear(num_filtros * 8, 512)
+        self.bn1 = nn.BatchNorm1d(512) # Normaliza os dados (impede que números explodam)
         
-        self.fc2 = nn.Linear(1024, 1024)
-        self.bn2 = nn.BatchNorm1d(1024)
+        self.fc2 = nn.Linear(512, 512)
+        self.bn2 = nn.BatchNorm1d(512)
         
-        self.fc3 = nn.Linear(1024, 1024)
-        self.bn3 = nn.BatchNorm1d(1024)
+        self.fc3 = nn.Linear(512, 512)
+        self.bn3 = nn.BatchNorm1d(512)
         
-        self.fc4 = nn.Linear(1024, 1024)
-        self.bn4 = nn.BatchNorm1d(1024)
-        
-        self.fc5 = nn.Linear(1024, 1024)
-        self.bn5 = nn.BatchNorm1d(1024)
+        self.fc4 = nn.Linear(512, 512)
+        self.bn4 = nn.BatchNorm1d(512)
         
         # CAMADA FINAL (A Decisão)
-        # Transforma os 1024 neurônios em apenas 1 único número: o Veredito (Tóxico ou Seguro).
-        self.fc6 = nn.Linear(1024, 1)
+        # Transforma os 512 neurônios em apenas 1 único número: o Veredito (Tóxico ou Seguro).
+        self.fc_final = nn.Linear(512, 1)
         
         # DROPOUT (Amnésia Programada)
         # Desliga 30% dos neurônios aleatoriamente durante o treino. 
@@ -96,12 +96,11 @@ class ModeradorCNN(nn.Module):
         x_fc = self.dropout(torch.relu(self.bn2(self.fc2(x_fc))))
         x_fc = self.dropout(torch.relu(self.bn3(self.fc3(x_fc))))
         x_fc = self.dropout(torch.relu(self.bn4(self.fc4(x_fc))))
-        x_fc = self.dropout(torch.relu(self.bn5(self.fc5(x_fc))))
         
         # SAÍDA BRUTA (Logit)
         # Não passamos a ativação Sigmoid aqui, apenas o número bruto. 
         # A função de Perda (BCEWithLogitsLoss) do PyTorch é mais rápida calculando Sigmoid por lá!
-        saida = self.fc6(x_fc)
+        saida = self.fc_final(x_fc)
         
         return saida
 
