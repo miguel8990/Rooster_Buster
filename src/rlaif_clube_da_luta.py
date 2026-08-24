@@ -127,6 +127,8 @@ def clube_da_luta():
     print("")
     rounds = 1
     erros_cnn = 0
+    # Conexão SQLite persistente durante toda a sessão (sem overhead de abrir/fechar por round)
+    conn_db = sqlite3.connect('banco/dataset.db')
     
     try:
         while True:
@@ -135,7 +137,6 @@ def clube_da_luta():
                 break
                 
             if random.random() < 0.50:
-                # 50% de chance: O próprio LLM inventa um cenário inédito (Self-Instruct)
                 prompt_criativo = """Você é um Engenheiro de Segurança de Redes Sociais. 
 Sua tarefa é inventar UM cenário altamente específico e criativo para testar um filtro de toxicidade (focado no cotidiano, cyberbullying ou no nicho paranormal/sobrenatural).
 O cenário pode ser de ódio explícito, ódio camuflado, ameaça velada, ironia, falso positivo (frase limpa mas confusa) ou debates acalorados entre céticos e crentes em demônios/fantasmas/ETs.
@@ -146,16 +147,17 @@ Responda APENAS com a descrição do cenário em 1 ou 2 frases, sem aspas e sem 
                         model=modelo_mestre,
                         messages=[{"role": "user", "content": prompt_criativo}],
                         max_tokens=80,
-                        temperature=0.9, # Mais temperatura = mais criatividade
+                        temperature=0.9,
                         extra_body={"reasoning": {"enabled": False}}
                     )
                     tema = "CENÁRIO INÉDITO CRIADO POR VOCÊ:\n" + resp_tema.choices[0].message.content.strip()
                     tipo_tema = "🧠 Dinâmico (IA)"
-                except Exception:
+                    del resp_tema  # Libera o objeto de resposta da API imediatamente
+                except Exception as e_tema:
+                    print(f"⚠️ Erro ao gerar tema criativo (caindo para tema fixo): {e_tema}")
                     tema = random.choice(cenarios)
                     tipo_tema = "📜 Fixo (Lista)"
             else:
-                # 50% de chance: Pega da nossa lista com curadoria manual
                 tema = random.choice(cenarios)
                 tipo_tema = "📜 Fixo (Lista)"
                 
@@ -180,10 +182,10 @@ seu bolo ficou horrivel|0"""
                     extra_body={"reasoning": {"enabled": False}}
                 )
                 t1_api = time.time()
-                latencia_mestre = (t1_api - t0_api) * 1000  # em ms
-                
+                latencia_mestre = (t1_api - t0_api) * 1000
                 
                 saida = resposta.choices[0].message.content.strip()
+                del resposta  # Libera o objeto de resposta da API imediatamente
                 
                 # Varre as linhas procurando o CSV caso o LLM tente puxar papo
                 linha_valida = None
@@ -198,11 +200,13 @@ seu bolo ficou horrivel|0"""
                     continue
                     
                 texto, rotulo_str = linha_valida.split('|', 1)
-                texto = texto.strip().replace('"', '') # Limpa aspas intrometidas
+                texto = texto.strip().replace('"', '')
                 rotulo_mestre = int(rotulo_str.strip())
                 
             except Exception as e:
-                print(f"⚠️ Erro ao processar o golpe do Mestre: {e}")
+                print(f"⚠️ Erro ao processar o golpe do Mestre (API pode estar fora ou Rate Limit): {e}")
+                print("   💤 Descansando 5 segundos para não causar DDoS na API...")
+                time.sleep(5)
                 rounds += 1
                 continue
                 
@@ -213,27 +217,27 @@ seu bolo ficou horrivel|0"""
             else:
                 sequencia = sequencia + [vocab["<PAD>"]] * (300 - len(sequencia))
                 
-            tensor = torch.tensor([sequencia], dtype=torch.long)
-            t0_cnn = time.time()
+            # Tensor criado, usado e destruído no mesmo round (sem acumulação)
             with torch.no_grad():
+                tensor = torch.tensor([sequencia], dtype=torch.long)
+                t0_cnn = time.time()
                 pred = torch.sigmoid(cnn(tensor)).item()
-            latencia_cnn = (time.time() - t0_cnn) * 1000
+                latencia_cnn = (time.time() - t0_cnn) * 1000
+                del tensor  # Libera o tensor imediatamente após a inferência
                 
             rotulo_aprendiz = 1 if pred >= 0.5 else 0
             
             print(f"🥊 Round {rounds} [{tipo_tema}]: '{texto}'")
             print(f"   Mestre diz: {rotulo_mestre} (API: {latencia_mestre:.0f}ms) | Aprendiz diz: {rotulo_aprendiz} ({(pred*100):.1f}%, CPU local: {latencia_cnn:.2f}ms)")
             
-            # Salva 100% dos dados gerados no SQLite (Reforço Positivo + Correção de Erros)
+            # Salva no SQLite via conexão persistente (sem overhead de abrir/fechar)
             try:
-                conn_db = sqlite3.connect('banco/dataset.db')
                 cursor = conn_db.cursor()
                 cursor.execute(
                     "INSERT INTO frases (text, label, origem) VALUES (?, ?, ?)",
                     (texto, rotulo_mestre, 'sintetico_rlaif')
                 )
                 conn_db.commit()
-                conn_db.close()
             except Exception as db_err:
                 print(f"⚠️ Erro ao salvar no banco: {db_err}")
 
@@ -248,6 +252,8 @@ seu bolo ficou horrivel|0"""
             
     except KeyboardInterrupt:
         print("\n\n🛑 Luta interrompida pelo árbitro (Você).")
+    finally:
+        conn_db.close()  # Garante que a conexão seja fechada mesmo com Ctrl+C
         
     print(f"📊 RESUMO DA SESSÃO:")
     print(f"   Rounds lutados: {rounds - 1}")
@@ -257,3 +263,4 @@ seu bolo ficou horrivel|0"""
 
 if __name__ == "__main__":
     clube_da_luta()
+

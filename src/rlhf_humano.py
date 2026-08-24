@@ -1,6 +1,7 @@
 import torch
 import json
 import os
+import time
 import sqlite3
 from modelo import ModeradorCNN
 
@@ -22,66 +23,73 @@ def rlhf_humano():
     modelo.load_state_dict(state_dict_limpo)
     modelo.eval()
     
-    caminho_csv = "dados/dados_sinteticos.csv"
-    
-    print("✅ Sistema Híbrido Ativado!")
-    print("Digite a frase. Se a IA errar, corrija-a. O erro virará dado de treino.\n")
-    
-    while True:
-        texto = input("💬 Frase de Teste (ou 'sair'): ").strip()
-        
-        if texto.lower() == 'sair':
-            break
-        if not texto:
-            continue
+    print("\n📜 RLHF Humano (Reinforcement Learning from Human Feedback) - RBooster")
+    print("Digite 'sair' a qualquer momento para voltar à vida real.")
+    print("O modelo será avaliado. Se errar, nós corrigiremos e injetaremos a vacina no SQLite.\n")
+
+    # Conexão SQLite persistente
+    conn_db = sqlite3.connect('banco/dataset.db')
+
+    try:
+        while True:
+            texto = input("💬 Digite uma frase para a CNN analisar: ").strip()
             
-        sequencia = [vocab.get(char, vocab["<UNK>"]) for char in texto.lower()]
-        
-        max_len = 300
-        if len(sequencia) > max_len:
-            sequencia = sequencia[:max_len]
-        elif len(sequencia) < max_len:
-            sequencia = sequencia + [vocab["<PAD>"]] * (max_len - len(sequencia))
+            if texto.lower() == 'sair':
+                break
+                
+            if not texto:
+                continue
+
+            # Processamento
+            sequencia = [vocab.get(char, vocab["<UNK>"]) for char in texto.lower()]
+            if len(sequencia) > 300:
+                sequencia = sequencia[:300]
+            else:
+                sequencia = sequencia + [vocab["<PAD>"]] * (300 - len(sequencia))
+                
+            tensor = torch.tensor([sequencia], dtype=torch.long)
             
-        tensor = torch.tensor([sequencia], dtype=torch.long)
-        
-        with torch.no_grad():
-            pred = torch.sigmoid(modelo(tensor)).item()
+            # Inferência
+            t0 = time.time()
+            with torch.no_grad():
+                pred = torch.sigmoid(modelo(tensor)).item()
+            latencia = (time.time() - t0) * 1000
             
-        probabilidade = pred * 100
-        previsao_binaria = 1 if pred >= 0.5 else 0
-        
-        status = "🔴 TÓXICO" if previsao_binaria == 1 else "🟢 SEGURO"
-        
-        print(f"🤖 Previsão da IA: {status} ({probabilidade:.1f}%)")
-        
-        feedback = input("A IA acertou? [s/n]: ").strip().lower()
-        
-        if feedback == 'n':
-            # Se a resposta é binária (0 ou 1) e ela errou, a reposta correta é obviamente o oposto matemático!
-            real_val = 1 - previsao_binaria
-            rotulo_nome = "TÓXICO (1)" if real_val == 1 else "SEGURO (0)"
-            mensagem = f"🩸 ERRO CORRIGIDO AUTOMATICAMENTE PARA {rotulo_nome}! A IA aprenderá essa nova regra."
-        else:
-            # Se ela acertou, a previsão dela é o gabarito correto
-            real_val = previsao_binaria
-            mensagem = "✨ ACERTO CONFIRMADO! Dado guardado para reforçar a memória."
+            classe = 1 if pred >= 0.5 else 0
+            emoji = "🔴 TÓXICO" if classe == 1 else "🟢 SEGURO"
             
-        # Grava no SQLite 100% das interações
-        try:
-            conn_db = sqlite3.connect('banco/dataset.db')
-            cursor = conn_db.cursor()
-            cursor.execute(
-                "INSERT INTO frases (text, label, origem) VALUES (?, ?, ?)",
-                (texto, real_val, 'sintetico_humano')
-            )
-            conn_db.commit()
-            conn_db.close()
-        except Exception as db_err:
-            print(f"⚠️ Erro ao salvar no banco: {db_err}")
+            print(f"🤖 Previsão da IA: {emoji} ({(pred*100):.1f}% de chance de toxicidade)")
+            print(f"⏱️  Tempo de resposta: {latencia:.2f}ms")
             
-        print(f"💾 {mensagem}")
-        print("-" * 45)
+            # Feedback
+            acertou = input("A IA acertou? (s/n): ").strip().lower()
+            
+            rotulo_correto = classe
+            if acertou == 'n':
+                # Corrige invertendo matematicamente a classe errada
+                rotulo_correto = 1 - classe
+                print(f"💉 Aplicando vacina! Ensinando que essa frase é {'Tóxica' if rotulo_correto == 1 else 'Segura'}.")
+            elif acertou != 's':
+                print("⚠️ Comando não reconhecido. Assumindo que a IA acertou.")
+                
+            # Salva no Banco de Dados
+            try:
+                cursor = conn_db.cursor()
+                cursor.execute(
+                    "INSERT INTO frases (text, label, origem) VALUES (?, ?, ?)",
+                    (texto, rotulo_correto, 'rlhf_humano')
+                )
+                conn_db.commit()
+                print("✅ Dado salvo no banco de dados!")
+            except Exception as e:
+                print(f"❌ Erro ao salvar no banco: {e}")
+                
+            print("-" * 40)
+            
+    except KeyboardInterrupt:
+        print("\n\nSessão de treinamento RLHF finalizada pelo usuário.")
+    finally:
+        conn_db.close()
 
 if __name__ == "__main__":
     rlhf_humano()

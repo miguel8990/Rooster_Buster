@@ -1,3 +1,4 @@
+import gc
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -6,86 +7,119 @@ from torch.utils.data import Dataset, DataLoader
 import sqlite3
 import json
 import os
+import numpy as np
 from modelo import ModeradorCNN, contar_parametros
-
-# Força o PyTorch a usar todas as 16 Threads do seu Ryzen 7 5700G!
-torch.set_num_threads(16)
 
 MAX_LEN = 300
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Dataset Preguiçoso (Lazy): Nunca carrega tudo na RAM.
-# Mantém só os rowids em memória (~32MB para 4M linhas) e busca cada
-# frase no SQLite apenas quando o DataLoader pede o lote.
+# O DATASET DE ALTA PERFORMANCE (SQLiteDataset)
 # ─────────────────────────────────────────────────────────────────────────────
 class SQLiteDataset(Dataset):
+    """
+    Esta classe traduz 4.3 milhões de textos para linguagem matemática
+    ANTES do treino começar. Assim, o loop de treinamento não engasga.
+    """
     def __init__(self, db_path, vocab, max_len=MAX_LEN):
-        self.db_path = db_path
-        self.vocab = vocab
         self.max_len = max_len
+        
+        unk_id = vocab.get("<UNK>", 1) # ID do caracter Desconhecido
+        pad_id = vocab.get("<PAD>", 0) # ID de Preenchimento de espaços em branco
 
-        # Lê APENAS os rowids e labels — isso é leve e cabe na RAM tranquilo
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
-        cur.execute("SELECT rowid, label FROM frases WHERE CAST(label AS REAL) IS NOT NULL")
-        rows = cur.fetchall()
-        conn.close()
-
-        # Filtra lixo de cabeçalhos que viraram None ou string
-        self.rowids = []
-        self.labels = []
-        for r in rows:
+        
+        # FASE 1: Contagem Leve
+        # Ao invés de carregar o banco todo na RAM, usamos um comando SQL rápido
+        # para descobrir apenas o TOTAL de frases válidas.
+        total = cur.execute("SELECT COUNT(*) FROM frases WHERE CAST(label AS REAL) IS NOT NULL").fetchone()[0]
+        print(f"📐 Total de linhas no banco: {total}")
+        
+        # FASE 2: A Mágica do NumPy (Evitando Memory Leak)
+        # O NumPy é escrito em C, logo ele dribla as frescuras de RAM do Python.
+        # Nós criamos uma "Planilha Gigante Vazia" cheia de zeros.
+        # int16 significa "número pequeno" (2 bytes). 
+        # Isso faz 4.3M * 300 usar 2.6GB em vez de 10GB!
+        self.X = np.zeros((total, max_len), dtype=np.int16)
+        self.Y = np.zeros(total, dtype=np.float32)
+        
+        ram_gb = (self.X.nbytes + self.Y.nbytes) / (1024**3)
+        print(f"📦 Arrays pré-alocados: ~{ram_gb:.2f} GB de RAM reservados.")
+        
+        # FASE 3: O Preenchimento (Streaming)
+        print("🔄 Preenchendo arrays com dados do banco...")
+        # O 'SELECT' sem 'fetchall' faz o SQLite cuspir os dados como uma mangueira.
+        cur.execute("SELECT text, label FROM frases WHERE CAST(label AS REAL) IS NOT NULL")
+        
+        idx = 0
+        for (texto_raw, label_raw) in cur:
             try:
-                self.labels.append(float(r[1]))
-                self.rowids.append(r[0])
+                label = float(label_raw)
             except (TypeError, ValueError):
-                pass
-
-        print(f"📦 Dataset com {len(self.rowids)} amostras indexadas (RAM segura).")
+                continue
+            
+            texto = str(texto_raw).lower()
+            
+            # Nós pegamos a letra, achamos o número dela no dicionário
+            # e carimbamos diretamente no quadrado vazio do Array NumPy!
+            col = 0
+            for c in texto:
+                if col >= max_len:
+                    break
+                self.X[idx, col] = vocab.get(c, unk_id)
+                col += 1
+            # Não precisamos colocar zeros (padding) porque o array começou cheio de zeros.
+            
+            self.Y[idx] = label
+            idx += 1
+            
+            if idx % 500_000 == 0:
+                print(f"   ⏳ {idx}/{total} linhas processadas ({idx/total*100:.0f}%)...")
+        
+        # Caso alguma frase tenha falhado no Try/Except, o idx será menor que o total.
+        # Aqui nós cortamos a 'gordura' final do array vazio.
+        if idx < total:
+            self.X = self.X[:idx]
+            self.Y = self.Y[:idx]
+        
+        conn.close()
+        print(f"✅ Dataset pronto: {idx} amostras | RAM fixa: ~{ram_gb:.2f} GB")
 
     def __len__(self):
-        return len(self.rowids)
+        """Diz ao PyTorch o tamanho total do nosso livro de dados."""
+        return len(self.X)
 
     def __getitem__(self, idx):
-        rowid = self.rowids[idx]
-        label = self.labels[idx]
-
-        # Abre uma conexão por item — SQLite suporta isso com check_same_thread=False
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        cur = conn.cursor()
-        cur.execute("SELECT text FROM frases WHERE rowid = ?", (rowid,))
-        row = cur.fetchone()
-        conn.close()
-
-        texto = str(row[0]).lower() if row else ""
-        seq = [self.vocab.get(c, self.vocab["<UNK>"]) for c in texto]
-
-        if len(seq) > self.max_len:
-            seq = seq[:self.max_len]
-        else:
-            seq = seq + [self.vocab["<PAD>"]] * (self.max_len - len(seq))
-
-        return torch.tensor(seq, dtype=torch.long), torch.tensor([label], dtype=torch.float32)
+        """
+        Quando o PyTorch pede a frase número 'idx', nós apenas recortamos aquela
+        fatia do Array NumPy e embrulhamos em um objeto `torch.tensor`.
+        Como usamos int16 no NumPy para economizar RAM, nós convertemos para int64 
+        apenas naquele milissegundo de uso.
+        """
+        return torch.from_numpy(self.X[idx].astype(np.int64)), torch.tensor([self.Y[idx]], dtype=torch.float32)
 
 
 def construir_vocabulario(db_path):
-    print("🔤 Construindo vocabulário (leitura em chunks de 100k)...")
+    """
+    Lê todo o banco de dados e cria um Dicionário de Letras Únicas (a, b, c, !, ?, emoji).
+    O(1) Memory: Lê linha a linha pelo cursor sem armazenar nada além do dicionário final.
+    """
+    print("🔤 Construindo vocabulário (O(1) Memory)...")
     caracteres_unicos = set()
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
 
-    offset = 0
-    chunk = 100_000
-    while True:
-        cur.execute("SELECT text FROM frases LIMIT ? OFFSET ?", (chunk, offset))
-        rows = cur.fetchall()
-        if not rows:
-            break
-        for (txt,) in rows:
+    cur.execute("SELECT text FROM frases")
+    
+    count = 0
+    for (txt,) in cur:
+        if txt:
             for char in str(txt).lower():
                 caracteres_unicos.add(char)
-        offset += chunk
-        print(f"   ⏳ {offset} textos escaneados para vocab...")
+        
+        count += 1
+        if count % 500_000 == 0:
+            print(f"   ⏳ {count} textos escaneados para vocab...")
 
     conn.close()
 
@@ -100,6 +134,12 @@ def construir_vocabulario(db_path):
 
 
 def calcular_pos_weight(db_path):
+    """
+    O seu banco de dados tem 95% de frases Seguras e apenas 5% de Tóxicas.
+    Se não ensinarmos a rede sobre isso, ela vai "chutar" Seguro sempre e acertar 95% da prova.
+    Esse cálculo matemático cria um multiplicador de 'peso'.
+    Errar uma frase tóxica custará 19 vezes mais "pontos negativos" para a rede!
+    """
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
     cur.execute("""
@@ -111,6 +151,12 @@ def calcular_pos_weight(db_path):
     """)
     toxicos, total = cur.fetchone()
     conn.close()
+    
+    # Proteção extra: se o banco for vazio, toxicos será nulo (None)
+    toxicos = toxicos or 0
+    if total == 0:
+        return torch.tensor([1.0], dtype=torch.float32)
+
     limpos = total - toxicos
     peso = limpos / max(toxicos, 1)
     print(f"⚖️  pos_weight = {peso:.2f}x  ({limpos} seguros / {toxicos} tóxicos)")
@@ -122,52 +168,71 @@ def treinar_moderador():
     if not os.path.exists(db_path):
         raise FileNotFoundError(f"Banco não encontrado: {db_path}. Rode a migração primeiro!")
 
+    # 1. Preparativos
     vocab = construir_vocabulario(db_path)
     peso_positivo = calcular_pos_weight(db_path)
-
     dataset = SQLiteDataset(db_path, vocab)
 
-    # num_workers=0: cada __getitem__ abre/fecha sua conexão SQLite
-    # Sem multiprocessing para evitar conflito de fork com torch.compile
-    carregador = DataLoader(dataset, batch_size=512, shuffle=True, num_workers=0)
+    # 2. O Entregador de Lotes (DataLoader)
+    # Ele empacota as frases de 512 em 512.
+    # num_workers=0: Como o __getitem__ só fatia arrays (milissegundos), não precisamos de
+    # subprocessos (forks) que causam vazamentos de RAM.
+    carregador = DataLoader(dataset, batch_size=512, shuffle=True, num_workers=0, drop_last=True)
 
+    # 3. Criando o Cérebro
     modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=64, num_filtros=128)
     contar_parametros(modelo)
-
-    print("⚙️  Compilando a CNN em C++ nativo (pode levar alguns segundos)...")
-    modelo = torch.compile(modelo)
-
+    
+    # 4. As Leis e Ferramentas de Treino
+    # Criterio (Loss): O juiz que diz o quão longe a rede passou da resposta correta.
     criterio = nn.BCEWithLogitsLoss(pos_weight=peso_positivo)
+    # Otimizador (AdamW): O professor particular que lê a punição do Juiz e mexe nos 5M de botões da rede.
     otimizador = optim.AdamW(modelo.parameters(), lr=0.001, weight_decay=0.01)
-    # CosineAnnealingLR: Diminui o LR suavemente (evita oscilação) - Ajustado para 3 épocas
+    # Scheduler: Diminui o poder de mudança do professor aos poucos, para não 'pular' a resposta perfeita no fim.
     scheduler = CosineAnnealingLR(otimizador, T_max=3, eta_min=1e-5)
 
     epocas = 3
     print("🥊 Iniciando a Caçada por Padrões Tóxicos!\n")
-
     os.makedirs("pesos", exist_ok=True)
 
     for epoca in range(epocas):
-        modelo.train()
+        modelo.train() # Coloca a rede em modo 'estudante ativo' (Habilita o Dropout de amnésia)
         perda_acumulada = 0.0
         acertos = 0
         total_amostras = 0
 
+        # O Loop Interno: Bate ponto e aprende!
         for batch_idx, (lote_x, lote_y) in enumerate(carregador):
+            # Zera a memória de punições do professor do lote anterior
             otimizador.zero_grad(set_to_none=True)
+            
+            # Forward: O Estudante tenta adivinhar a resposta (Faz a prova)
             predicao_bruta = modelo(lote_x)
+            
+            # Loss: O Juiz confere o gabarito (lote_y) e gera um erro matemático
             perda = criterio(predicao_bruta, lote_y)
+            
+            # Backward: O Juiz pega a prova errada e rastreia qual neurônio causou o erro
             perda.backward()
+            
+            # Step: O professor aperta ou afrouxa as conexões dos neurônios culpados
             otimizador.step()
 
+            # Estática e Acertos
             perda_acumulada += perda.item()
-            classes = (torch.sigmoid(predicao_bruta) >= 0.5).float()
-            acertos += (classes == lote_y).sum().item()
+            
+            # torch.no_grad(): Desliga a gravação matemática para não consumir memória extra
+            # .detach(): Desconecta a previsão do motor de aprendizado
+            with torch.no_grad():
+                classes = (torch.sigmoid(predicao_bruta.detach()) >= 0.5).float()
+                acertos += (classes == lote_y).sum().item()
+            
             total_amostras += lote_y.size(0)
             
-            # Printa o progresso a cada 1000 lotes (para 4M dados, são ~8300 lotes por época)
-            if (batch_idx + 1) % 1000 == 0:
+            # Printa o progresso para acalmar nossa ansiedade e chama o Caminhão de Lixo do Python
+            if (batch_idx + 1) % 100 == 0:
                 print(f"   ⏳ Época {epoca+1} - Progresso: Lote {batch_idx+1}/{len(carregador)} ({(batch_idx+1)/len(carregador)*100:.1f}%)")
+                gc.collect()
 
         scheduler.step()
         perda_media = perda_acumulada / len(carregador)
@@ -175,11 +240,13 @@ def treinar_moderador():
         lr_atual = scheduler.get_last_lr()[0]
         print(f"✅ Época [{epoca+1:02d}/{epocas}] CONCLUÍDA | Loss: {perda_media:.4f} | Acurácia: {acuracia:.2f}% | LR: {lr_atual:.6f}")
         
-        # Salva o checkpoint (backup) da época atual para que você possa usar mesmo se não terminar tudo!
+        # O Salva-Vidas: Guarda um backup a cada Época caso falte energia.
         checkpoint_path = f"pesos/pesos_moderador_ep{epoca+1}.pth"
         torch.save(modelo.state_dict(), checkpoint_path)
         print(f"   💾 Checkpoint salvo em: {checkpoint_path}\n")
+        gc.collect()
 
+    # Treino Finalizado. Colocamos o modelo em modo 'Operário Frio' (Desliga o Dropout).
     modelo.eval()
     torch.save(modelo.state_dict(), "pesos/pesos_moderador.pth")
     print("🎯 Rede treinada com sucesso! Pesos finais salvos em 'pesos/pesos_moderador.pth'")
