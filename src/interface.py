@@ -117,11 +117,11 @@ def carregar_interface():
         
     print(f"✅ Dicionário carregado ({len(vocab)} caracteres)")
     
-    modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=64, num_filtros=128)
+    modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=32, num_filtros=64)
     
     # O torch.compile (magia negra) adiciona '_orig_mod.' no nome das camadas ao salvar.
     # Precisamos limpar esse prefixo para a rede original aceitar os pesos.
-    state_dict = torch.load("pesos/pesos_moderador.pth", weights_only=True)
+    state_dict = torch.load("pesos/pesos_moderador.pth", weights_only=True, map_location='cpu')
     state_dict_limpo = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
     modelo.load_state_dict(state_dict_limpo)
     
