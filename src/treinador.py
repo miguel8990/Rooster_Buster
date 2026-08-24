@@ -106,7 +106,7 @@ class SQLiteDataset(Dataset):
                 if 'rlhf_humano' in origem_str:
                     peso_amostra = 8.0 # DADO OURO ABSOLUTO (As suas correções valem 10x mais)
                 elif 'rlaif' in origem_str or 'sintetico' in origem_str:
-                    peso_amostra = 4.0  # DADO PRATA (As batalhas da IA e as Vacinas valem 5x mais)
+                    peso_amostra = 2.0  # DADO PRATA (As batalhas da IA e as Vacinas valem 2x mais)
                     
             self.W[idx] = peso_amostra
             
