@@ -276,7 +276,7 @@ Exemplo:
                 try:
                     cursor = conn_db.cursor()
                     cursor.execute(
-                        "INSERT INTO frases (text, label, origem) VALUES (?, ?, ?)",
+                        "INSERT OR IGNORE INTO frases (text, label, origem) VALUES (?, ?, ?)",
                         (texto, rotulo_mestre, 'sintetico_rlaif')
                     )
                     conn_db.commit()

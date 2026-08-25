@@ -78,7 +78,7 @@ def rlhf_humano():
             try:
                 cursor = conn_db.cursor()
                 cursor.execute(
-                    "INSERT INTO frases (text, label, origem) VALUES (?, ?, ?)",
+                    "INSERT OR REPLACE INTO frases (text, label, origem) VALUES (?, ?, ?)",
                     (texto, rotulo_correto, 'rlhf_humano')
                 )
                 conn_db.commit()

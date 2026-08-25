@@ -105,8 +105,12 @@ class SQLiteDataset(Dataset):
                 origem_str = str(origem).lower()
                 if 'rlhf_humano' in origem_str:
                     peso_amostra = 8.0 # DADO OURO ABSOLUTO (As suas correções valem 10x mais)
-                elif 'rlaif' in origem_str or 'sintetico' in origem_str:
+                elif 'sintetico_rlaif' in origem_str:
                     peso_amostra = 2.0  # DADO PRATA (As batalhas da IA e as Vacinas valem 2x mais)
+                elif 'polyglot_sensivel' in origem_str:
+                    peso_amostra = 0.3  # DADO TÓXICO/ENVIESADO (Reduzimos a credibilidade destas frases em 70%)
+                elif 'polyglot_massivo' in origem_str:
+                    peso_amostra = 0.7
                     
             self.W[idx] = peso_amostra
             
