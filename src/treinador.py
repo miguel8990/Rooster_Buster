@@ -239,7 +239,7 @@ def treinar_moderador():
 
     
     # 3. Criando o Cérebro
-    modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=32, num_filtros=64).to(device)
+    modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=64, num_filtros=128).to(device)
     contar_parametros(modelo)
     
     # 4. As Leis e Ferramentas de Treino
