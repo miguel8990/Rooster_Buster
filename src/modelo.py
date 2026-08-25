@@ -7,7 +7,7 @@ class ModeradorCNN(nn.Module):
     Ao invés de ler imagens, essa IA lê "janelas" de letras em um texto.
     Ela procura por padrões visuais de palavrões (ex: v,t,n,c) e tons de ofensa.
     """
-    def __init__(self, vocab_size, embedding_dim=32, num_filtros=64):
+    def __init__(self, vocab_size, embedding_dim=64, num_filtros=128):
         super(ModeradorCNN, self).__init__()
         
         # 1. CAMADA DE EMBUTIMENTO (Embedding)
@@ -33,21 +33,24 @@ class ModeradorCNN(nn.Module):
         # Após a CNN encontrar os "indícios" criminais nas letras, nós juntamos tudo.
         # 4 lentes * 2 tipos de análise (Max e Avg) = 8 pacotes de informação.
         # Multiplicado pelos 128 filtros = 1024 conexões de entrada.
-        self.fc1 = nn.Linear(num_filtros * 8, 512)
-        self.bn1 = nn.BatchNorm1d(512) # Normaliza os dados (impede que números explodam)
+        self.fc1 = nn.Linear(num_filtros * 8, 1024)
+        self.bn1 = nn.BatchNorm1d(1024) # Normaliza os dados (impede que números explodam)
         
-        self.fc2 = nn.Linear(512, 512)
-        self.bn2 = nn.BatchNorm1d(512)
+        self.fc2 = nn.Linear(1024, 1024)
+        self.bn2 = nn.BatchNorm1d(1024)
         
-        self.fc3 = nn.Linear(512, 512)
-        self.bn3 = nn.BatchNorm1d(512)
+        self.fc3 = nn.Linear(1024, 1024)
+        self.bn3 = nn.BatchNorm1d(1024)
         
-        self.fc4 = nn.Linear(512, 512)
-        self.bn4 = nn.BatchNorm1d(512)
+        self.fc4 = nn.Linear(1024, 1024)
+        self.bn4 = nn.BatchNorm1d(1024)
+        
+        self.fc5 = nn.Linear(1024, 1024)
+        self.bn5 = nn.BatchNorm1d(1024)
         
         # CAMADA FINAL (A Decisão)
-        # Transforma os 512 neurônios em apenas 1 único número: o Veredito (Tóxico ou Seguro).
-        self.fc_final = nn.Linear(512, 1)
+        # Transforma os 1024 neurônios em apenas 1 único número: o Veredito (Tóxico ou Seguro).
+        self.fc_final = nn.Linear(1024, 1)
         
         # DROPOUT (Amnésia Programada)
         # Desliga 30% dos neurônios aleatoriamente durante o treino. 
@@ -96,6 +99,7 @@ class ModeradorCNN(nn.Module):
         x_fc = self.dropout(torch.relu(self.bn2(self.fc2(x_fc))))
         x_fc = self.dropout(torch.relu(self.bn3(self.fc3(x_fc))))
         x_fc = self.dropout(torch.relu(self.bn4(self.fc4(x_fc))))
+        x_fc = self.dropout(torch.relu(self.bn5(self.fc5(x_fc))))
         
         # SAÍDA BRUTA (Logit)
         # Não passamos a ativação Sigmoid aqui, apenas o número bruto. 
