@@ -1,6 +1,7 @@
 import sqlite3
 import os
 
+# Função que exibe o status do banco de dados (RBooster)
 def exibir_status_banco():
     db_path = 'banco/dataset.db'
     

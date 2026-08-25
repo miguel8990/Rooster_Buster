@@ -16,7 +16,7 @@ import resource
 os.makedirs("Logs", exist_ok=True)
 
 logging.basicConfig(
-    filename=f"Logs/treinador{time.time():.0f}.log",
+    filename=f"Logs/treinador.log",
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
@@ -104,7 +104,7 @@ class SQLiteDataset(Dataset):
             if origem:
                 origem_str = str(origem).lower()
                 if 'rlhf_humano' in origem_str:
-                    peso_amostra = 8.0 # DADO OURO ABSOLUTO (As suas correções valem 10x mais)
+                    peso_amostra = 5.0 # DADO OURO ABSOLUTO (As suas correções valem 10x mais)
                 elif 'sintetico_rlaif' in origem_str:
                     peso_amostra = 2.0  # DADO PRATA (As batalhas da IA e as Vacinas valem 2x mais)
                 elif 'polyglot_sensivel' in origem_str:
@@ -142,13 +142,17 @@ class SQLiteDataset(Dataset):
         return self.X[idx], np.array([self.Y[idx]]), np.array([self.W[idx]])
 
 
-def construir_vocabulario(db_path):
+def construir_vocabulario(db_path, min_emoji_freq=50):
     """
-    Lê todo o banco de dados e cria um Dicionário de Letras Únicas (a, b, c, !, ?, emoji).
-    O(1) Memory: Lê linha a linha pelo cursor sem armazenar nada além do dicionário final.
+    Dicionário Híbrido: Whitelist estrita para letras (barrando lixo)
+    + Scanner inteligente que caça emojis no banco de dados através de blocos Unicode.
     """
-    print("🔤 Construindo vocabulário (O(1) Memory)...")
-    caracteres_unicos = set()
+    import json
+    import sqlite3
+    from collections import Counter
+    
+    print("🔤 Escaneando banco de dados para capturar Emojis...")
+    frequencias = Counter()
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
 
@@ -156,8 +160,7 @@ def construir_vocabulario(db_path):
     count = 0
     for (txt,) in cur:
         if txt:
-            for char in str(txt).lower():
-                caracteres_unicos.add(char)
+            frequencias.update(str(txt).lower())
         
         count += 1
         if count % 500_000 == 0:
@@ -165,13 +168,44 @@ def construir_vocabulario(db_path):
 
     cur.close()
     conn.close()
-    vocab = {"<PAD>": 0, "<UNK>": 1}
-    for i, char in enumerate(sorted(caracteres_unicos), start=2):
-        vocab[char] = i
+    
+    # 1. O Alfabeto Oficial da Rede Neural (Whitelist)
+    letras = "abcdefghijklmnopqrstuvwxyz"
+    acentos = "áàãâéêíóôõúç"
+    numeros = "0123456789"
+    pontuacao = " !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+    
+    # Função para detectar se um caractere é Emoji puro baseado no bloco Unicode
+    def is_emoji(char):
+        try:
+            c = ord(char)
+            # Blocos principais de Emojis, Emoticons e Símbolos Pictográficos
+            return (0x1F300 <= c <= 0x1FAFF) or (0x2600 <= c <= 0x27BF)
+        except:
+            return False
 
-    print(f"✅ Vocabulário: {len(vocab)} caracteres únicos.")
+    vocab = {"<PAD>": 0, "<UNK>": 1}
+    idx = 2
+    
+    # Adiciona a Lista Branca rígida
+    for char in (letras + acentos + numeros + pontuacao):
+        if char not in vocab:
+            vocab[char] = idx
+            idx += 1
+            
+    # Adiciona os Emojis que passaram no teste de frequência
+    emojis_capturados = 0
+    for char, freq in frequencias.most_common():
+        if char not in vocab and is_emoji(char) and freq >= min_emoji_freq:
+            vocab[char] = idx
+            idx += 1
+            emojis_capturados += 1
+
+    print(f"✅ Vocabulário Híbrido: {len(vocab)} caracteres totais ({emojis_capturados} emojis capturados).")
+    
     with open("vocabulario.json", "w", encoding="utf-8") as f:
         json.dump(vocab, f, ensure_ascii=False, indent=2)
+        
     return vocab
 
 

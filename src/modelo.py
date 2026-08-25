@@ -32,21 +32,9 @@ class ModeradorCNN(nn.Module):
         # 3. O CÉREBRO PROFUNDO (Lóbulo Frontal / Fully Connected Layers)
         # Após a CNN encontrar os "indícios" criminais nas letras, nós juntamos tudo.
         # 4 lentes * 2 tipos de análise (Max e Avg) = 8 pacotes de informação.
-        # Multiplicado pelos 128 filtros = 1024 conexões de entrada.
+        # Multiplicado pelos 256 filtros = 2048 conexões de entrada.
         self.fc1 = nn.Linear(num_filtros * 8, 1024)
         self.bn1 = nn.BatchNorm1d(1024) # Normaliza os dados (impede que números explodam)
-        
-        self.fc2 = nn.Linear(1024, 1024)
-        self.bn2 = nn.BatchNorm1d(1024)
-        
-        self.fc3 = nn.Linear(1024, 1024)
-        self.bn3 = nn.BatchNorm1d(1024)
-        
-        self.fc4 = nn.Linear(1024, 1024)
-        self.bn4 = nn.BatchNorm1d(1024)
-        
-        self.fc5 = nn.Linear(1024, 1024)
-        self.bn5 = nn.BatchNorm1d(1024)
         
         # CAMADA FINAL (A Decisão)
         # Transforma os 1024 neurônios em apenas 1 único número: o Veredito (Tóxico ou Seguro).
@@ -93,13 +81,9 @@ class ModeradorCNN(nn.Module):
         # CONCATENAÇÃO: Junta as provas fortes (Max) e os contextos (Avg) de todas as lentes num só vetor.
         features = torch.cat((c2_max, c2_avg, c3_max, c3_avg, c4_max, c4_avg, c5_max, c5_avg), dim=1)
         
-        # O PENSAMENTO PROFUNDO
-        # A informação passa pelos 5 andares neurais, sofrendo filtragem (BatchNorm) e esquecimento (Dropout)
+        # O PENSAMENTO RÁPIDO (Corte de Gordura - Apenas 1 Camada Oculta)
+        # A informação sofre filtragem (BatchNorm) e esquecimento (Dropout)
         x_fc = self.dropout(torch.relu(self.bn1(self.fc1(features))))
-        x_fc = self.dropout(torch.relu(self.bn2(self.fc2(x_fc))))
-        x_fc = self.dropout(torch.relu(self.bn3(self.fc3(x_fc))))
-        x_fc = self.dropout(torch.relu(self.bn4(self.fc4(x_fc))))
-        x_fc = self.dropout(torch.relu(self.bn5(self.fc5(x_fc))))
         
         # SAÍDA BRUTA (Logit)
         # Não passamos a ativação Sigmoid aqui, apenas o número bruto. 
