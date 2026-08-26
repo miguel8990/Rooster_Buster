@@ -2,7 +2,9 @@ import torch
 import json
 import os
 import time
+import sys
 import sqlite3
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 from modelo import ModeradorCNN
 
 def rlhf_humano():
@@ -17,7 +19,7 @@ def rlhf_humano():
     with open("vocabulario.json", "r", encoding="utf-8") as f:
         vocab = json.load(f)
         
-    modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=64, num_filtros=128)
+    modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=256, num_filtros=512)
     state_dict = torch.load("pesos/pesos_moderador.pth", weights_only=True, map_location='cpu')
     state_dict_limpo = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
     modelo.load_state_dict(state_dict_limpo)

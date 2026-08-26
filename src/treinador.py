@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import Dataset, DataLoader
+from torch.cuda.amp import autocast, GradScaler
 import sqlite3
 import json
 import os
@@ -273,7 +274,7 @@ def treinar_moderador():
 
     
     # 3. Criando o Cérebro
-    modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=64, num_filtros=128).to(device)
+    modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=256, num_filtros=512).to(device)
     contar_parametros(modelo)
     
     # 4. As Leis e Ferramentas de Treino
@@ -284,6 +285,13 @@ def treinar_moderador():
     otimizador = optim.AdamW(modelo.parameters(), lr=0.001, weight_decay=0.01)
     # Scheduler: Ajusta a taxa de aprendizado ao longo das 5 épocas
     scheduler = CosineAnnealingLR(otimizador, T_max=epocas, eta_min=1e-5)
+    
+    # Aceleração de Hardware: FP16 automático na GPU T4 (Zero impacto na CPU)
+    usa_cuda = (device.type == 'cuda')
+    scaler = GradScaler(enabled=usa_cuda)
+    if usa_cuda:
+        print("⚡ Aceleração de Hardware Ativa: FP16 Mixed Precision (Tensor Cores T4/GPU)\n")
+        
     print("🥊 Iniciando a Caçada por Padrões Tóxicos!\n")
     os.makedirs("pesos", exist_ok=True)
 
@@ -301,33 +309,24 @@ def treinar_moderador():
             t_comp_start = time.time()
             
             # Envia os dados para a CPU ou Placa de Vídeo (O que estiver livre)
-            lote_x = lote_x.to(device, non_blocking=True).long() # Conversão de 1024 frases em bloco via C++ (Turbo)
+            lote_x = lote_x.to(device, non_blocking=True).long()
             lote_y = lote_y.to(device, non_blocking=True)
             lote_w = lote_w.to(device, non_blocking=True)
             
             # Zera a memória de punições do professor do lote anterior
             otimizador.zero_grad(set_to_none=True)
             
-            # Forward: O Estudante tenta adivinhar a resposta (Faz a prova)
-            # Removemos a Precisão Mista (BFloat16), pois processadores sem AVX-512 emulam 
-            # ela no software de forma letalmente lenta. Vamos usar Float32 Nativo.
-            predicao_bruta = modelo(lote_x).view_as(lote_y)
+            # Forward com FP16 Automático na GPU (ou Float32 na CPU)
+            with autocast(enabled=usa_cuda, dtype=torch.float16):
+                predicao_bruta = modelo(lote_x).view_as(lote_y)
+                perda_bruta = criterio(predicao_bruta, lote_y)
+                perda_com_peso = (perda_bruta * lote_w).mean()
             
-            # Loss Bruta: O Juiz entrega a lista com os 1024 erros da prova separadamente.
-            perda_bruta = criterio(predicao_bruta, lote_y)
-            
-            # Loss Ponderada: Multiplica o erro de cada frase pela sua "Importância" VIP.
-            perda_com_peso = (perda_bruta * lote_w).mean()
-            
-            # Backward: O Juiz pega a prova errada e rastreia qual neurônio causou o erro
-            # (feito fora do autocast por segurança matemática)
-            perda_com_peso.backward()
-            
-            # Step: O professor aperta ou afrouxa as conexões dos neurônios culpados
-            otimizador.step()
+            # Backward & Step com Scaler de Gradientes
+            scaler.scale(perda_com_peso).backward()
+            scaler.step(otimizador)
+            scaler.update()
 
-            # Apenas rastreamos a perda (Loss). Removemos o cálculo de Sigmoid/Acurácia 
-            # daqui de dentro para não gastar poder de CPU à toa no loop quente!
             perda_acumulada += perda_com_peso.item()
             total_amostras += lote_y.size(0)
             
@@ -357,20 +356,20 @@ def treinar_moderador():
         total_val = 0
         
         with torch.no_grad():
-            for lote_x, lote_y, lote_w in carregador_val:
-                lote_x = lote_x.to(device, non_blocking=True).long()
-                lote_y = lote_y.to(device, non_blocking=True)
-                lote_w = lote_w.to(device, non_blocking=True)
-                
-                # Validação em Float32 nativo
-                predicao = modelo(lote_x).view_as(lote_y)
-                perda_bruta = criterio(predicao, lote_y)
-                perda_com_peso = (perda_bruta * lote_w).mean()
-                
-                perda_val_acumulada += perda_com_peso.item()
-                classes = (torch.sigmoid(predicao) >= 0.5).float()
-                acertos_val += (classes == lote_y).sum().item()
-                total_val += lote_y.size(0)
+            with autocast(enabled=usa_cuda, dtype=torch.float16):
+                for lote_x, lote_y, lote_w in carregador_val:
+                    lote_x = lote_x.to(device, non_blocking=True).long()
+                    lote_y = lote_y.to(device, non_blocking=True)
+                    lote_w = lote_w.to(device, non_blocking=True)
+                    
+                    predicao = modelo(lote_x).view_as(lote_y)
+                    perda_bruta = criterio(predicao, lote_y)
+                    perda_com_peso = (perda_bruta * lote_w).mean()
+                    
+                    perda_val_acumulada += perda_com_peso.item()
+                    classes = (torch.sigmoid(predicao) >= 0.5).float()
+                    acertos_val += (classes == lote_y).sum().item()
+                    total_val += lote_y.size(0)
                 
         perda_val_media = perda_val_acumulada / len(carregador_val) if len(carregador_val) > 0 else 0.0
         acuracia_val = acertos_val / total_val if total_val > 0 else 0.0

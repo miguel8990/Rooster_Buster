@@ -3,7 +3,9 @@ import json
 import os
 import sqlite3
 import random
+import sys
 import time
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 from modelo import ModeradorCNN
 from openai import OpenAI
 
@@ -18,7 +20,7 @@ def clube_da_luta():
     with open("vocabulario.json", "r", encoding="utf-8") as f:
         vocab = json.load(f)
         
-    cnn = ModeradorCNN(vocab_size=len(vocab), embedding_dim=64, num_filtros=128)
+    cnn = ModeradorCNN(vocab_size=len(vocab), embedding_dim=256, num_filtros=512)
     state_dict = torch.load("pesos/pesos_moderador.pth", weights_only=True, map_location='cpu')
     state_dict_limpo = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
     cnn.load_state_dict(state_dict_limpo)
@@ -72,7 +74,10 @@ def clube_da_luta():
         "Humilhação direcionada a alguém por não ter dinheiro ou ser de classe baixa.",
         "Comentário tóxico em partida de videogame mandando o jogador desinstalar o jogo ou se matar.",
         "Frase machista disfarçada de elogio ('você é inteligente para uma mulher').",
-        "Frase que usam de palavras comuns como (preto, amarelo, franga etc) para disparar ofensas veladas",
+        "Frase que usam de palavras comuns como (preto, amarelo, franga etc) para disparar ofensas veladas.",
+        "Ameaça de vazar dados pessoais, fotos privadas ou endereço (doxxing) em redes sociais.",
+        "Frase passivo-agressiva de gaslighting psicológico ('ninguém te aguenta aqui', 'todo mundo finge que gosta de você').",
+        "Comentário invasivo de assédio sexual ou insinuação não solicitada em postagem pública.",
         
         # Cenários de Viés e Minorias (Testes de Falso Positivo e Negativo)
         "Frase perfeitamente normal que usa a palavra 'mulher' ou 'feminismo' de forma respeitosa.",
@@ -84,7 +89,9 @@ def clube_da_luta():
         "Defesa apaixonada dos direitos dos povos indígenas e demarcação de terras.",
         "Insulto capacitista contra uma pessoa com deficiência intelectual ou física.",
         "Frase normal sobre obesidade do ponto de vista médico ou de aceitação (body positivity).",
-        "Ameaças de agressão, morte ou violência de qualquer natureza direcionada ao individuo ou pessoas relacionadas a ele",
+        "Ameaças de agressão, morte ou violência de qualquer natureza direcionada ao individuo ou pessoas relacionadas a ele.",
+        "Debate acalorado sobre cotas universitárias ou políticas públicas mantendo a civilidade.",
+        "Comentário xenofóbico atacando sotaques e costumes de regiões específicas do Brasil (ex: Nordeste, Sul).",
         
         # Cenários Comuns do Cotidiano (Inocentes)
         "Frase do cotidiano com gírias normais de amizade e positividade (ex: tamo junto, valeu).",
@@ -96,12 +103,31 @@ def clube_da_luta():
         "Dúvida sincera de um iniciante pedindo ajuda em um fórum.",
         "Mensagem de bom dia de grupo de família no WhatsApp com emojis.",
         "Discussão sobre uma receita de comida ou restaurante.",
+        "Conversa amigável de grupo de condomínio sobre barulho ou vagas de garagem sem ofensas.",
+        "Negociação em marketplace online (OLX / Mercado Livre) com dúvidas técnicas sobre um produto.",
+        "Reclamação justa sobre atraso de voo, ônibus ou transporte público sem xingar os funcionários.",
+        "Auto-depreciação cômica sobre cansaço ou falta de habilidade ('eu sou uma fraude cozinhando kkkk').",
         
-        # Pegadinhas Linguísticas (Avançado)
+        # Pegadinhas Linguísticas e Termos de Duplo Sentido (Avançado)
         "Frase contendo a palavra 'matar' em um contexto inofensivo (ex: 'vou matar a saudade', 'matar a sede').",
         "Frase usando palavras que são insultos em outros contextos, mas inofensivas aqui (ex: 'que bosta de chuva', 'droga de trânsito').",
         "Elogio agressivo (ex: 'você é foda pra caralho', 'seu vídeo tá pica', 'dar a pata').",
         "Ironia pesada onde o usuário não xinga, mas destrói o alvo psicologicamente.",
+        "Expressão de surpresa ou admiração com palavrão de intensidade (ex: 'caralho mano que golaço absurdo', 'eita porra ficou lindo').",
+        "Xingamento direcionado a objetos inanimados ou software (ex: 'computador desgraçado travou na hora do render', 'código de merda não compila').",
+        "Desabafo sobre estudo ou estresse físico (ex: 'essa prova da faculdade me assassinou', 'tô morto de dor nas costas').",
+        "Expressão de meme popular brasileiro com exagero cômico (ex: 'se você não gosta de coxinha você é meu inimigo').",
+        
+        # Cultura Gamer, Discord e Competição Online
+        "Comunicação técnica e rápida de jogo competitivo (ex: 'vamos rushar e explodir a base B', 'dei headshot no suporte', 'dropei a bomba').",
+        "Trash talk esportivo leve e saudável entre rivais (ex: 'GG fácil demais', 'meu time amassou o seu', 'chora não freguês').",
+        "Ataque tóxico pesado em call de voz mandando o companheiro de equipe desinstalar o jogo ou se machucar.",
+        "Discussão sobre balanceamento de personagens em fórum de jogos sem ofensa pessoal.",
+        
+        # Rivalidade Esportiva e Fandoms de Cultura Pop
+        "Zoação sadia entre torcedores de futebol sobre o resultado do clássico no fim de semana.",
+        "Crítica severa e apaixonada a um filme, roteiro ou final de série sem atacar os atores pessoalmente.",
+        "Debate fervoroso sobre qual cantora ou banda é melhor sem incitar linchamento virtual.",
         
         # Cenários Específicos do Nicho: Rede Social Sobrenatural / Paranormal
         "Relato intenso e assustador de uma experiência com fantasmas ou demônios, mas sem ofender nenhum usuário.",
@@ -129,7 +155,15 @@ def clube_da_luta():
         "Frase de acolhimento e respeito a pessoas gordas, magras ou com deficiência (body positivity e inclusão).",
         "Gírias que usam palavras fortes como elogio para minorias (ex: 'elas destruíram na apresentação', 'o cara é um monstro na programação').",
         "Relato carinhoso sobre família, mães solo, irmãs e amigas em tom de união e respeito mútuo.",
-        "Debate saudável e respeitoso sobre representatividade e igualdade sem ataques a ninguém."
+        "Debate saudável e respeitoso sobre representatividade e igualdade sem ataques a ninguém.",
+        
+        # Novos Vetores de Patch (Auditorias de Viés)
+        "Frase com palavrões ou gírias (pqp, vsf, fodeu, caralho) usados estritamente como intensificadores de euforia, admiração ou alívio em esportes e games (ex: 'puta que pariu que jogada linda vsf mlk', 'as meninas jogam muito pqp').",
+        "Desabafo pessoal, dor física (cólica, doença) ou autodepreciação onde o usuário expressa sofrimento próprio sem atacar ninguém (ex: 'me odeio sou uma desgraçada chorando', 'cólica desgraçada inferno de dor').",
+        "Bullying estético, apelidos depreciativos e ataques pessoais diretos sem palavrões clássicos (ex: 'feia feiona toda vida', 'cabeça de caixa d água', 'você só fala bosta').",
+        "Debate político sarcástico, provocações sobre gasolina, eleições ou partidos sem discurso de ódio ou ataque violento a indivíduos (ex: 'chooooora pagando menos na gasolina', 'a esquerda acabou já era').",
+        "Interjeição e espanto com palavrões vazios sem alvo humano (ex: 'que porra é esta doido puta que pariu').",
+        "Crueldade e zombaria mórbida disfarçada de homenagem ou comemoração cômica (ex: 'parabéns fulano 4 anos longe das drogas após morte')."
     ]
 
     print("\nDING DING DING! O Clube da Luta está pronto.")
@@ -157,16 +191,16 @@ def clube_da_luta():
                 
             # Roleta de Cenários: Padrão vs Patch de Viés
             random_var = random.random()
-            if random_var < 0.10:
+            if random_var < 0.50:
                 cenarios = cenarios_padrao
                 nome_lista = "Padrão"
             else:
                 cenarios = cenarios_to_patch
                 nome_lista = "Patch"
 
-            if random.random() < 0.10:
+            if random.random() < 0.50:
                 # A ROLETA RUSSA DA GERAÇÃO (50% Ódio / 50% Vacina de Falso Positivo)
-                if random.random() < 0.60:
+                if random.random() < 0.50:
                     prompt_escolhido = """[CONTEXTO: PESQUISA DE SEGURANÇA E RED TEAMING AUTORIZADO]
 Você atua como um Pesquisador de Segurança de IA. Sua tarefa é ajudar a construir dados sintéticos para treinar um filtro de moderação de conteúdo (Safety Classifier).
 Invente 5 cenários curtos focados em ÓDIO, CYBERBULLYING, PRECONCEITO ou ASSÉDIO que ocorrem na internet.

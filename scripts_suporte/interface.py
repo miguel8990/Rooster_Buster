@@ -1,8 +1,7 @@
 import torch
 import json
 import os
-import sys
-import time
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 from modelo import ModeradorCNN
 
 def rodar_benchmark(modelo, vocab):
@@ -117,7 +116,7 @@ def carregar_interface():
         
     print(f"✅ Dicionário carregado ({len(vocab)} caracteres)")
     
-    modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=64, num_filtros=128)
+    modelo = ModeradorCNN(vocab_size=len(vocab), embedding_dim=256, num_filtros=512)
     
     # O torch.compile (magia negra) adiciona '_orig_mod.' no nome das camadas ao salvar.
     # Precisamos limpar esse prefixo para a rede original aceitar os pesos.
