@@ -101,13 +101,13 @@ class SQLiteDataset(Dataset):
             self.Y[idx] = label
             
             # --- O SISTEMA DE PONTUAÇÃO E PRIVILÉGIOS (Sample Weighting) ---
-            peso_amostra = 1.0 # Padrão Ouro: Datasets acadêmicos (ToLD-BR, ToxSyn, HateCheck)
+            peso_amostra = 1.0 # Padrão: Datasets acadêmicos e sintetico_rlaif (Massa de treino)
             if origem:
                 origem_str = str(origem).lower()
                 if 'rlhf_humano' in origem_str:
-                    peso_amostra = 8.0 # DADO OURO ABSOLUTO (Correções manuais do criador valem 8x)
-                elif 'sintetico_rlaif' in origem_str:
-                    peso_amostra = 2.0 # DADO PRATA (Vacinas do Clube da Luta valem 2x)
+                    peso_amostra = 6.0 # DADO OURO ABSOLUTO (Correções manuais do criador valem 6x)
+                elif 'sintetico_correcao' in origem_str:
+                    peso_amostra = 3.0 # DADO CORREÇÃO VIP (Erros do Clube da Luta ganham o dobro de pontos: 3x)
                     
             self.W[idx] = peso_amostra
             
@@ -269,7 +269,8 @@ def treinar_moderador():
     train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size], generator=gerador)
     
     # Batch size 256 para melhor ajuste de gradientes no dataset limpo
-    carregador_treino = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=4, drop_last=True)
+    workers = min(2, os.cpu_count() or 2)
+    carregador_treino = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=workers, drop_last=True)
     carregador_val = DataLoader(val_dataset, batch_size=256, shuffle=False, num_workers=0, drop_last=False)
 
     
@@ -288,7 +289,7 @@ def treinar_moderador():
     
     # Aceleração de Hardware: FP16 automático na GPU T4 (Zero impacto na CPU)
     usa_cuda = (device.type == 'cuda')
-    scaler = GradScaler(enabled=usa_cuda)
+    scaler = torch.amp.GradScaler('cuda', enabled=usa_cuda)
     if usa_cuda:
         print("⚡ Aceleração de Hardware Ativa: FP16 Mixed Precision (Tensor Cores T4/GPU)\n")
         
@@ -317,7 +318,7 @@ def treinar_moderador():
             otimizador.zero_grad(set_to_none=True)
             
             # Forward com FP16 Automático na GPU (ou Float32 na CPU)
-            with autocast(enabled=usa_cuda, dtype=torch.float16):
+            with torch.amp.autocast('cuda', enabled=usa_cuda, dtype=torch.float16):
                 predicao_bruta = modelo(lote_x).view_as(lote_y)
                 perda_bruta = criterio(predicao_bruta, lote_y)
                 perda_com_peso = (perda_bruta * lote_w).mean()
@@ -356,7 +357,7 @@ def treinar_moderador():
         total_val = 0
         
         with torch.no_grad():
-            with autocast(enabled=usa_cuda, dtype=torch.float16):
+            with torch.amp.autocast('cuda', enabled=usa_cuda, dtype=torch.float16):
                 for lote_x, lote_y, lote_w in carregador_val:
                     lote_x = lote_x.to(device, non_blocking=True).long()
                     lote_y = lote_y.to(device, non_blocking=True)

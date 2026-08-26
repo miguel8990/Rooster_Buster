@@ -163,7 +163,9 @@ def clube_da_luta():
         "Bullying estético, apelidos depreciativos e ataques pessoais diretos sem palavrões clássicos (ex: 'feia feiona toda vida', 'cabeça de caixa d água', 'você só fala bosta').",
         "Debate político sarcástico, provocações sobre gasolina, eleições ou partidos sem discurso de ódio ou ataque violento a indivíduos (ex: 'chooooora pagando menos na gasolina', 'a esquerda acabou já era').",
         "Interjeição e espanto com palavrões vazios sem alvo humano (ex: 'que porra é esta doido puta que pariu').",
-        "Crueldade e zombaria mórbida disfarçada de homenagem ou comemoração cômica (ex: 'parabéns fulano 4 anos longe das drogas após morte')."
+        "Crueldade e zombaria mórbida disfarçada de homenagem ou comemoração cômica (ex: 'parabéns fulano 4 anos longe das drogas após morte').",
+        "Fatos históricos, educativos ou sociológicos legítimos sobre minorias, escravidão e discriminação (ex: 'os negros sofreram abusos na história', 'o holocausto foi uma tragédia contra os judeus').",
+        "Truques e adestramento inofensivo de animais e pets (ex: 'meu cachorro aprendeu a dar a pata', 'o animal é grande e dócil')."
     ]
 
     print("\nDING DING DING! O Clube da Luta está pronto.")
@@ -332,21 +334,28 @@ Exemplo:
                 print(f"   [{index+1}] '{texto}'")
                 print(f"       Mestre: {rotulo_mestre} | Aprendiz: {rotulo_aprendiz} ({(pred*100):.1f}%, CPU local: {latencia_cnn:.2f}ms)", end=" -> ")
                 
+                # Roteamento Inteligente:
+                # - Acertou: 'sintetico_rlaif' (constrói volume e massa)
+                # - Errou: 'sintetico_correcao' (ganha o dobro de pontos / peso 2.0x no próximo treino)
+                if rotulo_mestre == rotulo_aprendiz:
+                    origem_alvo = 'sintetico_rlaif'
+                    status_luta = "✨ Esquivou"
+                else:
+                    origem_alvo = 'sintetico_correcao'
+                    erros_cnn += 1
+                    status_luta = "🩸 ERROU (Gravado como sintetico_correcao - Peso 2.0x)"
+
                 try:
                     cursor = conn_db.cursor()
                     cursor.execute(
                         "INSERT OR IGNORE INTO frases (text, label, origem) VALUES (?, ?, ?)",
-                        (texto, rotulo_mestre, 'sintetico_rlaif')
+                        (texto, rotulo_mestre, origem_alvo)
                     )
                     conn_db.commit()
                 except Exception as db_err:
                     print(f"⚠️ Erro banco: {db_err}")
 
-                if rotulo_mestre == rotulo_aprendiz:
-                    print("✨ Esquivou")
-                else:
-                    erros_cnn += 1
-                    print("🩸 ERROU (Vacinado)")
+                print(status_luta)
                     
             print("-" * 50)
             rounds += 1
