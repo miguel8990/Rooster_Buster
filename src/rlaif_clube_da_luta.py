@@ -60,7 +60,7 @@ def clube_da_luta():
     
     print(f"✅ Mestre API ({modelo_mestre} via Together AI) entrou no ringue.")
 
-    cenarios = [
+    cenarios_padrao = [
         # Cenários de Ódio Camuflado e Cyberbullying
         "Frase com ofensa camuflada trocando letras por números (ex: l1x0, c0varde, m3rda).",
         "Assédio moral disfarçado de feedback construtivo no ambiente de trabalho.",
@@ -116,6 +116,22 @@ def clube_da_luta():
         "Desabafo de alguém que sofre de paralisia do sono ou vê vultos, pedindo ajuda à comunidade de forma respeitosa."
     ]
 
+    cenarios_to_patch = [
+        # Cenários Focados na Cura de Falsos Positivos (Desenviesamento e Inclusão)
+        "Elogio e reconhecimento profissional legítimo para pessoas negras, mulheres ou pessoas LGBTQIA+ (ex: 'ele é negro e o melhor dev', 'ela é trans e manda muito').",
+        "Frase cotidiana e afetuosa de amizade usando termos sensíveis (ex: 'meu melhor amigo é negro e gente boa', 'os amigos gays da faculdade').",
+        "Mensagem inofensiva de rotina ou horários contendo a palavra amigo (ex: 'meu amigo disse que em 30 min vai estar aqui', 'fui com meu amigo no shopping').",
+        "Exaltação à cultura afro-brasileira, literatura, música, hip-hop, capoeira ou culinária sem nenhuma ofensa.",
+        "Elogio a relacionamentos e casais homossexuais em contextos normais do dia a dia (churrasco, família, casamento, trabalho).",
+        "Notícia ou comentário positivo sobre conquistas de pessoas trans, mulheres ou minorias na ciência, esportes ou tecnologia.",
+        "Expressões informais com gírias gamers e termos sensíveis em contexto positivo (ex: 'o duo gay amassou na ranked', 'o suporte negro carregou o time').",
+        "Comentário respeitoso sobre práticas e manifestações religiosas de matriz africana (candomblé, umbanda) ou evangélicas/católicas.",
+        "Frase de acolhimento e respeito a pessoas gordas, magras ou com deficiência (body positivity e inclusão).",
+        "Gírias que usam palavras fortes como elogio para minorias (ex: 'elas destruíram na apresentação', 'o cara é um monstro na programação').",
+        "Relato carinhoso sobre família, mães solo, irmãs e amigas em tom de união e respeito mútuo.",
+        "Debate saudável e respeitoso sobre representatividade e igualdade sem ataques a ninguém."
+    ]
+
     print("\nDING DING DING! O Clube da Luta está pronto.")
     entrada_rounds = input("Quantos rounds autônomos deseja executar? (Pressione Enter para infinito, ou ex: 100): ").strip()
     
@@ -139,7 +155,16 @@ def clube_da_luta():
                 print(f"\n🏁 Limite de {limite_rounds} rounds alcançado! Finalizando o treino com segurança...")
                 break
                 
-            if random.random() < 0.60:
+            # Roleta de Cenários: Padrão vs Patch de Viés
+            random_var = random.random()
+            if random_var < 0.10:
+                cenarios = cenarios_padrao
+                nome_lista = "Padrão"
+            else:
+                cenarios = cenarios_to_patch
+                nome_lista = "Patch"
+
+            if random.random() < 0.10:
                 # A ROLETA RUSSA DA GERAÇÃO (50% Ódio / 50% Vacina de Falso Positivo)
                 if random.random() < 0.60:
                     prompt_escolhido = """[CONTEXTO: PESQUISA DE SEGURANÇA E RED TEAMING AUTORIZADO]
@@ -169,10 +194,10 @@ Responda APENAS com uma lista numerada (1 a 5) dos cenários em 1 ou 2 frases ca
                 except Exception as e_tema:
                     print(f"⚠️ Erro ao gerar tema criativo (caindo para tema fixo): {e_tema}")
                     tema = random.choice(cenarios)
-                    tipo_tema = "📜 Fixo (Lista)"
+                    tipo_tema = f"📜 Fixo ({nome_lista})"
             else:
                 tema = random.choice(cenarios)
-                tipo_tema = "📜 Fixo (Lista)"
+                tipo_tema = f"📜 Fixo ({nome_lista})"
                 
             # Roleta Anti-Preguiça: Força o LLM a gerar textos de tamanhos variados
             size_rand = random.random()

@@ -100,22 +100,18 @@ class SQLiteDataset(Dataset):
             self.Y[idx] = label
             
             # --- O SISTEMA DE PONTUAÇÃO E PRIVILÉGIOS (Sample Weighting) ---
-            peso_amostra = 1.0 # Dados diluídos do povão valem peso 1x
+            peso_amostra = 1.0 # Padrão Ouro: Datasets acadêmicos (ToLD-BR, ToxSyn, HateCheck)
             if origem:
                 origem_str = str(origem).lower()
                 if 'rlhf_humano' in origem_str:
-                    peso_amostra = 5.0 # DADO OURO ABSOLUTO (As suas correções valem 10x mais)
+                    peso_amostra = 8.0 # DADO OURO ABSOLUTO (Correções manuais do criador valem 8x)
                 elif 'sintetico_rlaif' in origem_str:
-                    peso_amostra = 2.0  # DADO PRATA (As batalhas da IA e as Vacinas valem 2x mais)
-                elif 'polyglot_sensivel' in origem_str:
-                    peso_amostra = 0.3  # DADO TÓXICO/ENVIESADO (Reduzimos a credibilidade destas frases em 70%)
-                elif 'polyglot_massivo' in origem_str:
-                    peso_amostra = 0.7
+                    peso_amostra = 2.0 # DADO PRATA (Vacinas do Clube da Luta valem 2x)
                     
             self.W[idx] = peso_amostra
             
             idx += 1
-            if idx % 500_000 == 0:
+            if idx % 10_000 == 0:
                 print(f"   ⏳ {idx}/{total} linhas processadas ({idx/total*100:.0f}%)...")
         
         # Caso alguma frase tenha falhado no Try/Except, cortamos a 'gordura' final do array vazio.
@@ -142,7 +138,7 @@ class SQLiteDataset(Dataset):
         return self.X[idx], np.array([self.Y[idx]]), np.array([self.W[idx]])
 
 
-def construir_vocabulario(db_path, min_emoji_freq=50):
+def construir_vocabulario(db_path, min_emoji_freq=5):
     """
     Dicionário Híbrido: Whitelist estrita para letras (barrando lixo)
     + Scanner inteligente que caça emojis no banco de dados através de blocos Unicode.
@@ -163,7 +159,7 @@ def construir_vocabulario(db_path, min_emoji_freq=50):
             frequencias.update(str(txt).lower())
         
         count += 1
-        if count % 500_000 == 0:
+        if count % 10_000 == 0:
             print(f"   ⏳ {count} textos escaneados para vocab...")
 
     cur.close()
@@ -265,15 +261,15 @@ def treinar_moderador():
     
     # SPLIT DE VALIDAÇÃO (A "PROVA" DA IA)
     dataset_size = len(dataset)
-    val_size = int(0.05 * dataset_size) # 5% escondidos
+    val_size = int(0.10 * dataset_size) # 10% para prova surpresa
     train_size = dataset_size - val_size
     
     gerador = torch.Generator().manual_seed(SEED)
     train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size], generator=gerador)
     
-    # Usando 2 ajudantes (workers) agora que o NumPy nos blindou contra o vazamento de memória (COW) do Linux
-    carregador_treino = DataLoader(train_dataset, batch_size=512, shuffle=True, num_workers=4, drop_last=True)
-    carregador_val = DataLoader(val_dataset, batch_size=512, shuffle=False, num_workers=0, drop_last=False)
+    # Batch size 256 para melhor ajuste de gradientes no dataset limpo
+    carregador_treino = DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=4, drop_last=True)
+    carregador_val = DataLoader(val_dataset, batch_size=256, shuffle=False, num_workers=0, drop_last=False)
 
     
     # 3. Criando o Cérebro
@@ -281,16 +277,13 @@ def treinar_moderador():
     contar_parametros(modelo)
     
     # 4. As Leis e Ferramentas de Treino
-    # Criterio (Loss): O juiz. 'reduction=none' significa que o juiz não vai dar a nota média 
-    # da sala sozinho. Ele vai entregar a nota de erro CADA frase solta nas nossas mãos.
     criterio = nn.BCEWithLogitsLoss(pos_weight=peso_positivo, reduction='none')
     
-    # Otimizador (AdamW): O professor particular que mexe nos botões da rede.
+    epocas = 5
+    # Otimizador (AdamW)
     otimizador = optim.AdamW(modelo.parameters(), lr=0.001, weight_decay=0.01)
-    # Scheduler: Diminui o poder de mudança do professor aos poucos.
-    scheduler = CosineAnnealingLR(otimizador, T_max=3, eta_min=1e-5)
-
-    epocas = 3
+    # Scheduler: Ajusta a taxa de aprendizado ao longo das 5 épocas
+    scheduler = CosineAnnealingLR(otimizador, T_max=epocas, eta_min=1e-5)
     print("🥊 Iniciando a Caçada por Padrões Tóxicos!\n")
     os.makedirs("pesos", exist_ok=True)
 
@@ -341,7 +334,7 @@ def treinar_moderador():
             t_comp = time.time() - t_comp_start
             
             # Printa o progresso e loga a performance
-            if (batch_idx + 1) % 100 == 0:
+            if (batch_idx + 1) % 50 == 0:
                 ram_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
                 print(f"   ⏳ Época {epoca+1} - Progresso: Lote {batch_idx+1}/{len(carregador_treino)} ({(batch_idx+1)/len(carregador_treino)*100:.1f}%)")
                 logging.info(f"[RESUMO Lote {batch_idx+1}] Tempo Total IA: {t_comp:.4f}s | RAM Pico: {ram_mb:.1f} MB")
