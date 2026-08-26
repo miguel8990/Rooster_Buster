@@ -8,6 +8,7 @@ relatorios
 .env
 banco
 banco_backup
+amostras
 tutorias
 # User-specific files
 *.rsuser
